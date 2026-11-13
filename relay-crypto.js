@@ -7,15 +7,26 @@ const SALT = new TextEncoder().encode('SwiftClip Relay');
 export const FILE_EXTENSION = 'screlay';
 export const ROOT = 'Apps/SwiftClip';
 export const FOLDERS = { toBrowser: 'ToBrowser', fromBrowser: 'FromBrowser' };
-export const MAX_FILE_BYTES = 2 * 1024 * 1024;
+// An image travels base64-encoded twice (in the message, then as ciphertext).
+export const MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const MAX_TEXT_BYTES = 1000000;
+export const MAX_IMAGE_BYTES = 4000000;
+export const IMAGE_TYPES = ['image/png', 'image/jpeg'];
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
+function base64ToBytes(text) {
+  return Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+}
 
 const subtle = globalThis.crypto.subtle;
 
 export function base64url(bytes) {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return bytesToBase64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 export function fromBase64url(text) {
@@ -120,13 +131,24 @@ function associatedData(fileName) {
   return new TextEncoder().encode(`SwiftClip Relay v1\n${fileName}`);
 }
 
-/** Encrypts { text, password, from, sentAt } for `fileName`. Returns a JSON string. */
+/**
+ * Encrypts { text, password, from, sentAt, image? } for `fileName`, where
+ * image is { type, bytes (Uint8Array), width, height }. Returns a JSON string.
+ * Keys are in the order SwiftClip writes them (sorted).
+ */
 export async function seal(message, keys, fileName, nonce = globalThis.crypto.getRandomValues(new Uint8Array(12))) {
+  const image = message.image ? {
+    data: bytesToBase64(message.image.bytes),
+    height: Math.round(message.image.height),
+    type: String(message.image.type),
+    width: Math.round(message.image.width),
+  } : undefined;
   const plaintext = new TextEncoder().encode(JSON.stringify({
     from: message.from ?? undefined,
+    image,
     password: Boolean(message.password),
     sentAt: Math.round(message.sentAt ?? Date.now()),
-    text: String(message.text),
+    text: String(message.text ?? ''),
   }));
   const sealed = new Uint8Array(await subtle.encrypt(
     { name: 'AES-GCM', iv: nonce, additionalData: associatedData(fileName), tagLength: 128 },
@@ -183,10 +205,23 @@ export async function open(json, keys, fileName) {
     throw new RelayError('malformed');
   }
   if (!message || typeof message.text !== 'string') throw new RelayError('malformed');
+  let image = null;
+  if (message.image !== undefined && message.image !== null) {
+    const { type, data, width, height } = message.image;
+    if (!IMAGE_TYPES.includes(type) || typeof data !== 'string' || !Number.isInteger(width) || !Number.isInteger(height)) {
+      throw new RelayError('malformed');
+    }
+    try {
+      image = { type, bytes: base64ToBytes(data), width, height };
+    } catch {
+      throw new RelayError('malformed');
+    }
+  }
   return {
     text: message.text,
     password: message.password === true,
     from: typeof message.from === 'string' ? message.from : null,
     sentAt: typeof message.sentAt === 'number' ? message.sentAt : 0,
+    image,
   };
 }

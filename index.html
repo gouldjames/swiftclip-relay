@@ -7,9 +7,9 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://login.microsoftonline.com https://graph.microsoft.com https://*.sharepoint.com https://*.1drv.com https://*.livefilestore.com; base-uri 'none'; form-action 'none'">
   <meta name="color-scheme" content="light dark">
   <title>SwiftClip Relay</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=0ffe00a">
   <link rel="icon" href="logo.svg" type="image/svg+xml">
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=0ffe00a"></script>
 </head>
 <body>
   <header class="bar">
@@ -64,15 +64,22 @@
       <section class="card">
         <h2>Send to SwiftClip</h2>
         <form id="send-form">
-          <textarea id="send-text" rows="4" placeholder="Type or paste here" aria-label="Text to send"></textarea>
+          <textarea id="send-text" rows="4" placeholder="Type or paste text or an image here" aria-label="Text to send"></textarea>
+          <div id="send-image" class="send-image" hidden>
+            <img id="send-image-preview" alt="Image to send">
+            <span id="send-image-info" class="dim small"></span>
+            <button type="button" class="link" id="send-image-remove">Remove</button>
+          </div>
+          <input type="file" id="send-image-file" accept="image/*" hidden>
           <div class="send-row">
             <label class="check"><input type="checkbox" id="send-password"> Password</label>
             <span class="spacer"></span>
+            <button type="button" id="choose-image">Choose Image…</button>
             <button type="button" id="paste-send">Paste and Send</button>
             <button class="primary" type="submit" id="send-button">Send</button>
           </div>
         </form>
-        <p class="dim small">Arrives in your SwiftClip history within a few seconds. Ctrl+Enter sends.</p>
+        <p class="dim small">Arrives in your SwiftClip history within a few seconds. Ctrl+Enter sends. Images over 4 MB are scaled down.</p>
       </section>
     </div>
 

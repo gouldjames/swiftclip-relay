@@ -1,11 +1,12 @@
 // SwiftClip Relay: shows what SwiftClip sent to OneDrive and sends text back.
 // Everything is decrypted and encrypted here in the browser; OneDrive only
 // stores ciphertext. Message text is only ever inserted with textContent.
-import * as auth from './auth.js';
-import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js';
+import * as auth from './auth.js?v=0ffe00a';
+import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=0ffe00a';
 import {
-  FOLDERS, MAX_TEXT_BYTES, RelayError, deriveKeys, keyIDOf, makeFileName, open, parseFileName, parseKey, seal,
-} from './relay-crypto.js';
+  FOLDERS, IMAGE_TYPES, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, RelayError, deriveKeys, keyIDOf, makeFileName, open,
+  parseFileName, parseKey, seal,
+} from './relay-crypto.js?v=0ffe00a';
 
 const KEY_STORAGE = 'swiftclip.relayKey';
 const NOTIFY_STORAGE = 'swiftclip.notify';
@@ -202,7 +203,33 @@ function renderItem(entry) {
   const actions = document.createElement('div');
   actions.className = 'item-actions';
 
-  if (entry.message) {
+  if (entry.message?.image) {
+    const { message } = entry;
+    const name = entry.file.name;
+    const hidden = message.password && !revealed.has(name);
+    if (hidden) {
+      text.textContent = 'Hidden image';
+    } else {
+      const img = document.createElement('img');
+      img.className = 'item-image';
+      img.alt = `Image from ${message.from || 'SwiftClip'}`;
+      img.src = imageURL(entry);
+      text.append(img);
+    }
+    if (message.password) {
+      li.classList.add('password');
+      actions.append(button(hidden ? 'Show' : 'Hide', () => {
+        if (revealed.has(name)) revealed.delete(name); else revealed.add(name);
+        render();
+      }));
+    }
+    meta.textContent = [`Image ${message.image.width} × ${message.image.height}`, message.from ? `from ${message.from}` : null, timeLeft(entry.expiresAt)]
+      .filter(Boolean).join(' · ');
+    actions.append(
+      button('Copy', () => copyMessage(message), true),
+      button('Delete', () => deleteItem(entry)),
+    );
+  } else if (entry.message) {
     const { message } = entry;
     const name = entry.file.name;
     if (message.password) {
@@ -272,7 +299,9 @@ function notifyArrival(arrived) {
   const { message } = newest;
   const from = message.from || 'SwiftClip';
   const title = arrived.length === 1 ? `From ${from}` : `${arrived.length} items from ${from}`;
-  const preview = message.password ? mask(message.text) : message.text.slice(0, 140);
+  const preview = message.image
+    ? (message.password ? 'Hidden image' : `Image ${message.image.width} × ${message.image.height}`)
+    : (message.password ? mask(message.text) : message.text.slice(0, 140));
   const notification = new Notification(title, {
     body: `${preview}\nClick to copy`,
     tag: 'swiftclip-arrival',
@@ -282,7 +311,7 @@ function notifyArrival(arrived) {
   notification.onclick = () => {
     clearTimeout(timer);
     notification.close();
-    copyWhenFocused(message.text, message.password);
+    copyWhenFocused(() => copyMessage(message));
   };
 }
 
@@ -309,10 +338,10 @@ let pendingCopy = null;
  * window forward (it may only flash it), copy as soon as the person clicks
  * into the page, within a minute.
  */
-async function copyWhenFocused(text, isPassword) {
+async function copyWhenFocused(copyIt) {
   window.focus();
   if (await waitForFocus(1500)) {
-    copy(text, isPassword);
+    copyIt();
     return;
   }
   if (pendingCopy) window.removeEventListener('focus', pendingCopy.listener);
@@ -320,7 +349,7 @@ async function copyWhenFocused(text, isPassword) {
     window.removeEventListener('focus', listener);
     clearTimeout(pendingCopy?.timer);
     pendingCopy = null;
-    copy(text, isPassword);
+    copyIt();
   };
   const timer = setTimeout(() => {
     window.removeEventListener('focus', listener);
@@ -355,6 +384,105 @@ async function copy(text, isPassword) {
   toast(isPassword ? 'Password copied' : 'Copied');
 }
 
+/** Copies a received message: its image, or its text. */
+function copyMessage(message) {
+  if (message.image) copyImage(message.image); else copy(message.text, message.password);
+}
+
+/** A data: URL for an item's image (the page's security policy allows data: images). */
+function imageURL(entry) {
+  entry.imageURL ??= `data:${entry.message.image.type};base64,${bytesToBase64(entry.message.image.bytes)}`;
+  return entry.imageURL;
+}
+
+function bytesToBase64(bytes) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
+/** Browsers only put PNG images on the clipboard, so JPEGs are converted first. */
+async function copyImage(image) {
+  try {
+    const png = image.type === 'image/png'
+      ? Promise.resolve(new Blob([image.bytes], { type: 'image/png' }))
+      : encodeImage(new Blob([image.bytes], { type: image.type }), 'image/png');
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+    toast('Image copied');
+  } catch {
+    toast('Your browser blocked copying the image.');
+  }
+}
+
+/** Re-encodes an image blob, optionally scaled so its longer side is at most `maxSide`. */
+async function encodeImage(blob, type, maxSide = Infinity, quality = 0.85) {
+  const bitmap = await createImageBitmap(blob);
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext('2d');
+  if (type === 'image/jpeg') {
+    // JPEG has no transparency: put transparent areas on white, as SwiftClip does.
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((result) => (result ? resolve(result) : reject(new Error('Couldn’t encode the image'))), type, quality);
+  });
+}
+
+/**
+ * A pasted or chosen image, ready to send: PNG or JPEG, at most 4 MB, scaled
+ * down and re-encoded if needed. Returns { type, bytes, width, height }.
+ */
+async function prepareImage(blob) {
+  let candidate = blob;
+  if (!IMAGE_TYPES.includes(blob.type) || blob.size > MAX_IMAGE_BYTES) {
+    candidate = null;
+    for (const [type, maxSide] of [['image/png', Infinity], ['image/jpeg', 3000], ['image/jpeg', 2048], ['image/jpeg', 1600], ['image/jpeg', 1200]]) {
+      const encoded = await encodeImage(blob, type, maxSide);
+      if (encoded.size <= MAX_IMAGE_BYTES) {
+        candidate = encoded;
+        break;
+      }
+    }
+    if (!candidate) throw new Error('That image is too large to send.');
+  }
+  const bitmap = await createImageBitmap(candidate);
+  const prepared = { type: candidate.type, bytes: new Uint8Array(await candidate.arrayBuffer()), width: bitmap.width, height: bitmap.height };
+  bitmap.close();
+  return prepared;
+}
+
+// MARK: - Sending images
+
+let pendingImage = null;
+
+async function attachImage(blob) {
+  try {
+    pendingImage = await prepareImage(blob);
+  } catch (error) {
+    pendingImage = null;
+    toast(error.message || 'That image can’t be sent.');
+    return;
+  }
+  $('send-image-preview').src = `data:${pendingImage.type};base64,${bytesToBase64(pendingImage.bytes)}`;
+  const bytes = pendingImage.bytes.length;
+  const size = bytes < 1048576 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
+  $('send-image-info').textContent = `Image ${pendingImage.width} × ${pendingImage.height} · ${size}`;
+  $('send-image').hidden = false;
+}
+
+function clearImage() {
+  pendingImage = null;
+  $('send-image').hidden = true;
+  $('send-image-preview').removeAttribute('src');
+  $('send-image-file').value = '';
+}
+
 async function deleteItem(entry) {
   try {
     await remove(entry.file.id);
@@ -365,9 +493,9 @@ async function deleteItem(entry) {
   }
 }
 
-async function send(text, password) {
-  if (!text.trim()) return;
-  if (new TextEncoder().encode(text).length > MAX_TEXT_BYTES) {
+async function send(text, password, image = pendingImage) {
+  if (!image && !text.trim()) return;
+  if (!image && new TextEncoder().encode(text).length > MAX_TEXT_BYTES) {
     toast('That’s too long to send.');
     return;
   }
@@ -375,11 +503,14 @@ async function send(text, password) {
   sendButton.disabled = true;
   try {
     const name = makeFileName(Date.now() + SEND_LIFETIME);
-    const sealed = await seal({ text, password, from: 'Web', sentAt: Date.now() }, keys, name);
+    const message = image
+      ? { text: '', password, from: 'Web', sentAt: Date.now(), image }
+      : { text, password, from: 'Web', sentAt: Date.now() };
+    const sealed = await seal(message, keys, name);
     await upload(FOLDERS.fromBrowser, name, sealed);
-    $('send-text').value = '';
+    if (image) clearImage(); else $('send-text').value = '';
     $('send-password').checked = false;
-    toast('Sent to SwiftClip');
+    toast(image ? 'Image sent to SwiftClip' : 'Sent to SwiftClip');
   } catch (error) {
     handleError(error);
     toast(error instanceof SignInRequired ? 'Sign in again to send.' : 'Couldn’t send. Try again.');
@@ -419,6 +550,18 @@ function wireEvents() {
     show('signed-out');
   });
   $('notify').addEventListener('change', (event) => setNotifications(event.target.checked));
+  $('send-text').addEventListener('paste', (event) => {
+    const file = [...(event.clipboardData?.files || [])].find((f) => f.type.startsWith('image/'));
+    if (!file) return;
+    event.preventDefault();
+    attachImage(file);
+  });
+  $('choose-image').addEventListener('click', () => $('send-image-file').click());
+  $('send-image-file').addEventListener('change', (event) => {
+    const file = event.target.files?.[0];
+    if (file) attachImage(file);
+  });
+  $('send-image-remove').addEventListener('click', clearImage);
   $('change-key').addEventListener('click', () => {
     forgetKey();
     clearTimeout(pollTimer);
@@ -449,6 +592,16 @@ function wireEvents() {
   });
   $('paste-send').addEventListener('click', async () => {
     try {
+      if (navigator.clipboard.read) {
+        for (const item of await navigator.clipboard.read()) {
+          const type = item.types.find((t) => t.startsWith('image/'));
+          if (type) {
+            await attachImage(await item.getType(type));
+            if (pendingImage) send('', $('send-password').checked);
+            return;
+          }
+        }
+      }
       const text = await navigator.clipboard.readText();
       if (!text) {
         toast('The clipboard is empty.');

@@ -99,6 +99,9 @@ textarea { resize: vertical; min-height: 90px; }
 .item-meta { grid-column: 1; font-size: 12px; color: var(--dim); }
 .item-actions { grid-row: 1 / span 2; grid-column: 2; display: flex; gap: 6px; }
 .item.unreadable { opacity: 0.7; }
+.item-image { display: block; max-width: 100%; max-height: 240px; border-radius: 8px; border: 1px solid var(--line); }
+.send-image { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.send-image img { max-height: 72px; max-width: 160px; border-radius: 6px; border: 1px solid var(--line); }
 .empty { margin: 4px 0 0; font-size: 14px; }
 
 .send-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
