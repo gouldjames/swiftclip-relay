@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 206 206">
+  <!-- The SwiftClip app icon, drawn to its proportions. -->
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4596fb"/>
+      <stop offset="1" stop-color="#5759d8"/>
+    </linearGradient>
+  </defs>
+  <rect width="206" height="206" rx="46" fill="url(#background)"/>
+  <rect x="53" y="40" width="100" height="132" rx="10" fill="#ffffff"/>
+  <rect x="81" y="35" width="44" height="21" rx="7" fill="#2c3070"/>
+  <rect x="89" y="40" width="28" height="4" rx="2" fill="#ffffff"/>
+  <rect x="69" y="73" width="68" height="8" rx="4" fill="#5856d6"/>
+  <rect x="69" y="93" width="68" height="9" rx="4.5" fill="#788ceb"/>
+  <rect x="69" y="114" width="54" height="9" rx="4.5" fill="#788ceb"/>
+  <rect x="69" y="134" width="37" height="9" rx="4.5" fill="#788ceb"/>
+</svg>

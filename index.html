@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://login.microsoftonline.com https://graph.microsoft.com https://*.sharepoint.com https://*.1drv.com https://*.livefilestore.com; base-uri 'none'; form-action 'none'">
+  <meta name="color-scheme" content="light dark">
+  <title>SwiftClip Relay</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <img class="logo" src="logo.svg" alt="" width="26" height="26">
+      <span>SwiftClip <span class="dim">Relay</span></span>
+    </div>
+    <div class="account" id="account" hidden>
+      <span id="account-name" class="dim"></span>
+      <button class="link" id="change-key" type="button">Change Key</button>
+      <button class="link" id="sign-out" type="button">Sign Out</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="setup" class="card centered" hidden>
+      <h1>Almost there</h1>
+      <p>This copy of the relay page has no Microsoft app ID yet. Set <code>clientId</code> in <code>config.js</code>, as described under “OneDrive Relay” in SwiftClip’s README.</p>
+    </section>
+
+    <section id="signed-out" class="card centered" hidden>
+      <h1>Your clipboard, from your Mac</h1>
+      <p>Sign in with the Microsoft account you use in SwiftClip. Items are encrypted, and removed from OneDrive after a few minutes.</p>
+      <button class="primary" id="sign-in" type="button">Sign In with Microsoft</button>
+    </section>
+
+    <section id="key-entry" class="card centered" hidden>
+      <h1>Enter your relay key</h1>
+      <p>Find it in SwiftClip › Settings › OneDrive Relay on your Mac or iPhone.</p>
+      <form id="key-form" autocomplete="off">
+        <input id="key-input" class="key-input" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX" spellcheck="false" autocapitalize="characters" aria-label="Relay key">
+        <label class="check"><input type="checkbox" id="remember-key"> Remember on this computer</label>
+        <p id="key-error" class="error" role="alert" hidden></p>
+        <button class="primary" type="submit">Continue</button>
+      </form>
+    </section>
+
+    <div id="relay" hidden>
+      <section class="card">
+        <div class="section-title">
+          <h2>From SwiftClip</h2>
+          <span class="title-extras">
+            <label class="check" id="notify-option" hidden title="Shows each new item for 5 seconds. Click the notification to copy it."><input type="checkbox" id="notify"> Notify me</label>
+            <span id="status" class="dim small" role="status"></span>
+          </span>
+        </div>
+        <ul id="items" class="items" aria-live="polite"></ul>
+        <p id="empty" class="empty dim">Nothing yet. On your Mac, right-click an item in SwiftClip and choose Send to OneDrive, or press ⌘O.</p>
+      </section>
+
+      <section class="card">
+        <h2>Send to SwiftClip</h2>
+        <form id="send-form">
+          <textarea id="send-text" rows="4" placeholder="Type or paste here" aria-label="Text to send"></textarea>
+          <div class="send-row">
+            <label class="check"><input type="checkbox" id="send-password"> Password</label>
+            <span class="spacer"></span>
+            <button type="button" id="paste-send">Paste and Send</button>
+            <button class="primary" type="submit" id="send-button">Send</button>
+          </div>
+        </form>
+        <p class="dim small">Arrives in your SwiftClip history within a few seconds. Ctrl+Enter sends.</p>
+      </section>
+    </div>
+
+    <p id="message" class="toast" role="alert" hidden></p>
+  </main>
+</body>
+</html>
