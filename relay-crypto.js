@@ -7,10 +7,24 @@ const SALT = new TextEncoder().encode('SwiftClip Relay');
 export const FILE_EXTENSION = 'screlay';
 export const ROOT = 'Apps/SwiftClip';
 export const FOLDERS = { toBrowser: 'ToBrowser', fromBrowser: 'FromBrowser' };
-// An image travels base64-encoded twice (in the message, then as ciphertext).
-export const MAX_FILE_BYTES = 8 * 1024 * 1024;
+// Images and attachments travel base64-encoded twice (in the message, then as
+// ciphertext), so relay files may be up to 12 MB for a 5 MB attachment.
+export const MAX_FILE_BYTES = 12 * 1024 * 1024;
 export const MAX_TEXT_BYTES = 1000000;
 export const MAX_IMAGE_BYTES = 4000000;
+export const MAX_ATTACHMENT_BYTES = 5000000;
+
+/** A file name that can't leave the folder it's saved in, as in SwiftClip (RelayFile.safeName). */
+export function safeFileName(name) {
+  let cleaned = String(name ?? '').replace(/[\/\\:\u0000-\u001f\u007f-\u009f]/g, '_').trim().replace(/^\.+/, '');
+  if ([...cleaned].length > 200) {
+    const dot = cleaned.lastIndexOf('.');
+    const ext = dot > 0 ? cleaned.slice(dot + 1) : '';
+    const stem = [...(ext ? cleaned.slice(0, dot) : cleaned)].slice(0, ext ? 199 - [...ext].length : 200).join('');
+    cleaned = ext ? `${stem}.${ext}` : stem;
+  }
+  return cleaned || 'File';
+}
 export const IMAGE_TYPES = ['image/png', 'image/jpeg'];
 
 function bytesToBase64(bytes) {
@@ -132,11 +146,17 @@ function associatedData(fileName) {
 }
 
 /**
- * Encrypts { text, password, from, sentAt, image? } for `fileName`, where
- * image is { type, bytes (Uint8Array), width, height }. Returns a JSON string.
- * Keys are in the order SwiftClip writes them (sorted).
+ * Encrypts { text, password, from, sentAt, image?, file? } for `fileName`,
+ * where image is { type, bytes (Uint8Array), width, height } and file is
+ * { name, type, bytes }. Returns a JSON string. Keys are in the order
+ * SwiftClip writes them (sorted).
  */
 export async function seal(message, keys, fileName, nonce = globalThis.crypto.getRandomValues(new Uint8Array(12))) {
+  const file = message.file ? {
+    data: bytesToBase64(message.file.bytes),
+    name: safeFileName(message.file.name),
+    type: String(message.file.type || 'application/octet-stream'),
+  } : undefined;
   const image = message.image ? {
     data: bytesToBase64(message.image.bytes),
     height: Math.round(message.image.height),
@@ -144,6 +164,7 @@ export async function seal(message, keys, fileName, nonce = globalThis.crypto.ge
     width: Math.round(message.image.width),
   } : undefined;
   const plaintext = new TextEncoder().encode(JSON.stringify({
+    file,
     from: message.from ?? undefined,
     image,
     password: Boolean(message.password),
@@ -217,11 +238,22 @@ export async function open(json, keys, fileName) {
       throw new RelayError('malformed');
     }
   }
+  let file = null;
+  if (message.file !== undefined && message.file !== null) {
+    const { name, type, data } = message.file;
+    if (typeof name !== 'string' || typeof data !== 'string') throw new RelayError('malformed');
+    try {
+      file = { name: safeFileName(name), type: typeof type === 'string' ? type : 'application/octet-stream', bytes: base64ToBytes(data) };
+    } catch {
+      throw new RelayError('malformed');
+    }
+  }
   return {
     text: message.text,
     password: message.password === true,
     from: typeof message.from === 'string' ? message.from : null,
     sentAt: typeof message.sentAt === 'number' ? message.sentAt : 0,
     image,
+    file,
   };
 }

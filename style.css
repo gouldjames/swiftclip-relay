@@ -102,6 +102,11 @@ textarea { resize: vertical; min-height: 90px; }
 .item-image { display: block; max-width: 100%; max-height: 240px; border-radius: 8px; border: 1px solid var(--line); }
 .send-image { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
 .send-image img { max-height: 72px; max-width: 160px; border-radius: 6px; border: 1px solid var(--line); }
+.send-image img[hidden], .file-icon[hidden] { display: none; }
+.file-icon { width: 34px; height: 42px; border-radius: 5px; border: 1px solid var(--line); background: var(--field); position: relative; flex: none; }
+.file-icon::after { content: ""; position: absolute; top: -1px; right: -1px; width: 12px; height: 12px; background: var(--card); border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.item-file { display: flex; align-items: center; gap: 12px; }
+.item-file .name { font-weight: 600; overflow-wrap: anywhere; }
 .empty { margin: 4px 0 0; font-size: 14px; }
 
 .send-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }

@@ -1,6 +1,6 @@
 // The Microsoft Graph calls the relay page needs.
-import { accessToken } from './auth.js?v=0ffe00a';
-import { MAX_FILE_BYTES, ROOT } from './relay-crypto.js?v=0ffe00a';
+import { accessToken } from './auth.js?v=6449276';
+import { MAX_FILE_BYTES, ROOT } from './relay-crypto.js?v=6449276';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0/me/drive/';
 

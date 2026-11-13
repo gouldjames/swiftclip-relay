@@ -1,12 +1,12 @@
 // SwiftClip Relay: shows what SwiftClip sent to OneDrive and sends text back.
 // Everything is decrypted and encrypted here in the browser; OneDrive only
 // stores ciphertext. Message text is only ever inserted with textContent.
-import * as auth from './auth.js?v=0ffe00a';
-import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=0ffe00a';
+import * as auth from './auth.js?v=6449276';
+import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=6449276';
 import {
-  FOLDERS, IMAGE_TYPES, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, RelayError, deriveKeys, keyIDOf, makeFileName, open,
-  parseFileName, parseKey, seal,
-} from './relay-crypto.js?v=0ffe00a';
+  FOLDERS, IMAGE_TYPES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, RelayError, deriveKeys, keyIDOf,
+  makeFileName, open, parseFileName, parseKey, safeFileName, seal,
+} from './relay-crypto.js?v=6449276';
 
 const KEY_STORAGE = 'swiftclip.relayKey';
 const NOTIFY_STORAGE = 'swiftclip.notify';
@@ -203,7 +203,25 @@ function renderItem(entry) {
   const actions = document.createElement('div');
   actions.className = 'item-actions';
 
-  if (entry.message?.image) {
+  if (entry.message?.file) {
+    const { message } = entry;
+    const row = document.createElement('div');
+    row.className = 'item-file';
+    const icon = document.createElement('span');
+    icon.className = 'file-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = message.file.name;
+    row.append(icon, name);
+    text.append(row);
+    meta.textContent = [formatSize(message.file.bytes.length), message.from ? `from ${message.from}` : null, timeLeft(entry.expiresAt)]
+      .filter(Boolean).join(' · ');
+    actions.append(
+      button('Download', () => downloadFile(message.file), true),
+      button('Delete', () => deleteItem(entry)),
+    );
+  } else if (entry.message?.image) {
     const { message } = entry;
     const name = entry.file.name;
     const hidden = message.password && !revealed.has(name);
@@ -299,11 +317,13 @@ function notifyArrival(arrived) {
   const { message } = newest;
   const from = message.from || 'SwiftClip';
   const title = arrived.length === 1 ? `From ${from}` : `${arrived.length} items from ${from}`;
-  const preview = message.image
-    ? (message.password ? 'Hidden image' : `Image ${message.image.width} × ${message.image.height}`)
-    : (message.password ? mask(message.text) : message.text.slice(0, 140));
+  const preview = message.file
+    ? `${message.file.name} · ${formatSize(message.file.bytes.length)}`
+    : message.image
+      ? (message.password ? 'Hidden image' : `Image ${message.image.width} × ${message.image.height}`)
+      : (message.password ? mask(message.text) : message.text.slice(0, 140));
   const notification = new Notification(title, {
-    body: `${preview}\nClick to copy`,
+    body: `${preview}\n${message.file ? 'Click to download' : 'Click to copy'}`,
     tag: 'swiftclip-arrival',
     silent: true,
   });
@@ -311,7 +331,8 @@ function notifyArrival(arrived) {
   notification.onclick = () => {
     clearTimeout(timer);
     notification.close();
-    copyWhenFocused(() => copyMessage(message));
+    // Downloads don't need the page to have focus; copying does.
+    if (message.file) downloadFile(message.file); else copyWhenFocused(() => copyMessage(message));
   };
 }
 
@@ -382,6 +403,25 @@ async function copy(text, isPassword) {
     }
   }
   toast(isPassword ? 'Password copied' : 'Copied');
+}
+
+/** Saves a received file through the browser's downloads. */
+function downloadFile(file) {
+  const url = URL.createObjectURL(new Blob([file.bytes], { type: file.type || 'application/octet-stream' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = safeFileName(file.name);
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  toast(`Downloading ${safeFileName(file.name)}`);
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1048576) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
 }
 
 /** Copies a received message: its image, or its text. */
@@ -460,6 +500,12 @@ async function prepareImage(blob) {
 // MARK: - Sending images
 
 let pendingImage = null;
+let pendingFile = null;
+
+/** Attaches a chosen, pasted or dropped file: images as images, anything else as a file. */
+function attach(file) {
+  if (file.type.startsWith('image/')) attachImage(file); else attachFile(file);
+}
 
 async function attachImage(blob) {
   try {
@@ -469,15 +515,31 @@ async function attachImage(blob) {
     toast(error.message || 'That image can’t be sent.');
     return;
   }
+  pendingFile = null;
   $('send-image-preview').src = `data:${pendingImage.type};base64,${bytesToBase64(pendingImage.bytes)}`;
-  const bytes = pendingImage.bytes.length;
-  const size = bytes < 1048576 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
-  $('send-image-info').textContent = `Image ${pendingImage.width} × ${pendingImage.height} · ${size}`;
+  $('send-image-preview').hidden = false;
+  $('send-file-icon').hidden = true;
+  $('send-image-info').textContent = `Image ${pendingImage.width} × ${pendingImage.height} · ${formatSize(pendingImage.bytes.length)}`;
+  $('send-image').hidden = false;
+}
+
+async function attachFile(file) {
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    toast('Files up to 5 MB can be sent.');
+    return;
+  }
+  pendingFile = { name: safeFileName(file.name), type: file.type || 'application/octet-stream', bytes: new Uint8Array(await file.arrayBuffer()) };
+  pendingImage = null;
+  $('send-image-preview').removeAttribute('src');
+  $('send-image-preview').hidden = true;
+  $('send-file-icon').hidden = false;
+  $('send-image-info').textContent = `${pendingFile.name} · ${formatSize(pendingFile.bytes.length)}`;
   $('send-image').hidden = false;
 }
 
 function clearImage() {
   pendingImage = null;
+  pendingFile = null;
   $('send-image').hidden = true;
   $('send-image-preview').removeAttribute('src');
   $('send-image-file').value = '';
@@ -493,9 +555,9 @@ async function deleteItem(entry) {
   }
 }
 
-async function send(text, password, image = pendingImage) {
-  if (!image && !text.trim()) return;
-  if (!image && new TextEncoder().encode(text).length > MAX_TEXT_BYTES) {
+async function send(text, password, image = pendingImage, file = pendingFile) {
+  if (!image && !file && !text.trim()) return;
+  if (!image && !file && new TextEncoder().encode(text).length > MAX_TEXT_BYTES) {
     toast('That’s too long to send.');
     return;
   }
@@ -503,14 +565,16 @@ async function send(text, password, image = pendingImage) {
   sendButton.disabled = true;
   try {
     const name = makeFileName(Date.now() + SEND_LIFETIME);
-    const message = image
-      ? { text: '', password, from: 'Web', sentAt: Date.now(), image }
-      : { text, password, from: 'Web', sentAt: Date.now() };
+    const message = file
+      ? { text: '', password, from: 'Web', sentAt: Date.now(), file }
+      : image
+        ? { text: '', password, from: 'Web', sentAt: Date.now(), image }
+        : { text, password, from: 'Web', sentAt: Date.now() };
     const sealed = await seal(message, keys, name);
     await upload(FOLDERS.fromBrowser, name, sealed);
-    if (image) clearImage(); else $('send-text').value = '';
+    if (image || file) clearImage(); else $('send-text').value = '';
     $('send-password').checked = false;
-    toast(image ? 'Image sent to SwiftClip' : 'Sent to SwiftClip');
+    toast(file ? `${file.name} sent to SwiftClip` : image ? 'Image sent to SwiftClip' : 'Sent to SwiftClip');
   } catch (error) {
     handleError(error);
     toast(error instanceof SignInRequired ? 'Sign in again to send.' : 'Couldn’t send. Try again.');
@@ -551,15 +615,24 @@ function wireEvents() {
   });
   $('notify').addEventListener('change', (event) => setNotifications(event.target.checked));
   $('send-text').addEventListener('paste', (event) => {
-    const file = [...(event.clipboardData?.files || [])].find((f) => f.type.startsWith('image/'));
+    const file = event.clipboardData?.files?.[0];
     if (!file) return;
     event.preventDefault();
-    attachImage(file);
+    attach(file);
+  });
+  $('send-text').addEventListener('dragover', (event) => {
+    if (event.dataTransfer?.types?.includes('Files')) event.preventDefault();
+  });
+  $('send-text').addEventListener('drop', (event) => {
+    const file = event.dataTransfer?.files?.[0];
+    if (!file) return;
+    event.preventDefault();
+    attach(file);
   });
   $('choose-image').addEventListener('click', () => $('send-image-file').click());
   $('send-image-file').addEventListener('change', (event) => {
     const file = event.target.files?.[0];
-    if (file) attachImage(file);
+    if (file) attach(file);
   });
   $('send-image-remove').addEventListener('click', clearImage);
   $('change-key').addEventListener('click', () => {
