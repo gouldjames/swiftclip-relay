@@ -4,11 +4,15 @@
 import { config } from './config.js';
 
 const SCOPES = 'openid profile offline_access https://graph.microsoft.com/Files.ReadWrite';
-// Tokens live only as long as this tab: nothing stays behind on a shared or
-// client-managed computer.
-const store = sessionStorage;
+// By default tokens live only as long as this tab, so nothing stays behind on a
+// shared or client-managed computer. "Keep me signed in" keeps them in this
+// browser for 10 days, a period that starts again each time the page is used.
+const REMEMBER_MS = 10 * 24 * 60 * 60 * 1000;
 const TOKENS = 'swiftclip.tokens';
 const PENDING = 'swiftclip.pendingSignIn';
+const SILENT_ATTEMPT = 'swiftclip.silentRenewal';
+// The sign-in in progress always lives in the tab.
+const store = sessionStorage;
 
 const authority = () => `https://login.microsoftonline.com/${encodeURIComponent(config.tenant || 'common')}/oauth2/v2.0`;
 export const redirectURI = () => location.origin + location.pathname;
@@ -25,21 +29,46 @@ async function challengeFor(verifier) {
 }
 
 function readTokens() {
-  try {
-    return JSON.parse(store.getItem(TOKENS)) || null;
-  } catch {
-    return null;
+  for (const storage of [sessionStorage, localStorage]) {
+    let tokens = null;
+    try {
+      tokens = JSON.parse(storage.getItem(TOKENS));
+    } catch {
+      tokens = null;
+    }
+    if (!tokens) continue;
+    if (tokens.remember && !(tokens.rememberUntil > Date.now())) {
+      // Unused for 10 days: forget it.
+      storage.removeItem(TOKENS);
+      continue;
+    }
+    return tokens;
   }
+  return null;
 }
 
-function saveTokens(response, previous) {
+function writeTokens(tokens) {
+  (tokens.remember ? sessionStorage : localStorage).removeItem(TOKENS);
+  (tokens.remember ? localStorage : sessionStorage).setItem(TOKENS, JSON.stringify(tokens));
+}
+
+/**
+ * `options.remember` keeps the sign-in in this browser. `options.signedInAt`
+ * carries the original sign-in time through a silent renewal, so a sign-out
+ * sent from SwiftClip still applies.
+ */
+function saveTokens(response, previous, options = {}) {
+  const remember = options.remember ?? previous?.remember ?? false;
   const tokens = {
     accessToken: response.access_token,
     expiresAt: Date.now() + (Number(response.expires_in) || 3600) * 1000,
     refreshToken: response.refresh_token || previous?.refreshToken || null,
     account: (response.id_token && accountName(response.id_token)) || previous?.account || null,
+    remember,
+    rememberUntil: remember ? (previous?.rememberUntil ?? Date.now() + REMEMBER_MS) : null,
+    signedInAt: options.signedInAt ?? previous?.signedInAt ?? Date.now(),
   };
-  store.setItem(TOKENS, JSON.stringify(tokens));
+  writeTokens(tokens);
   return tokens;
 }
 
@@ -61,11 +90,37 @@ export function isSignedIn() {
   return Boolean(readTokens());
 }
 
-/** Goes to Microsoft's sign-in page. */
-export async function signIn({ prompt } = {}) {
+/** When this browser signed in, in milliseconds; 0 when signed out. */
+export function signedInAt() {
+  return readTokens()?.signedInAt || 0;
+}
+
+/** Whether the sign-in is kept in this browser. */
+export function remembers() {
+  return Boolean(readTokens()?.remember);
+}
+
+/** The page was used: a kept sign-in lasts another 10 days from now. */
+export function touch() {
+  const tokens = readTokens();
+  if (!tokens?.remember) return;
+  const until = Date.now() + REMEMBER_MS;
+  // Write at most hourly.
+  if (until - tokens.rememberUntil < 60 * 60 * 1000) return;
+  writeTokens({ ...tokens, rememberUntil: until });
+}
+
+/**
+ * Goes to Microsoft's sign-in page. `remember` keeps the sign-in in this
+ * browser for 10 days. A renewal passes the account and the original
+ * `signedInAt`.
+ */
+export async function signIn({ prompt, remember = false, loginHint, signedInAt: originalSignIn } = {}) {
   const verifier = randomString();
   const state = randomString(16);
-  store.setItem(PENDING, JSON.stringify({ verifier, state }));
+  store.setItem(PENDING, JSON.stringify({
+    verifier, state, remember, signedInAt: originalSignIn ?? null, renewal: Boolean(originalSignIn),
+  }));
   const parameters = new URLSearchParams({
     client_id: config.clientId,
     response_type: 'code',
@@ -77,11 +132,13 @@ export async function signIn({ prompt } = {}) {
     code_challenge_method: 'S256',
   });
   if (prompt) parameters.set('prompt', prompt);
+  if (loginHint) parameters.set('login_hint', loginHint);
   location.assign(`${authority()}/authorize?${parameters}`);
 }
 
 export function signOut() {
-  store.removeItem(TOKENS);
+  sessionStorage.removeItem(TOKENS);
+  localStorage.removeItem(TOKENS);
   store.removeItem(PENDING);
 }
 
@@ -111,6 +168,11 @@ export async function handleRedirect() {
   const pending = JSON.parse(store.getItem(PENDING) || 'null');
   store.removeItem(PENDING);
   if (query.has('error')) {
+    if (pending?.renewal) {
+      // Renewing didn't work out (e.g. the person cancelled Microsoft's page).
+      signOut();
+      throw new Error('Your sign-in has ended. Sign in again to continue.');
+    }
     throw new Error(query.get('error_description') || query.get('error'));
   }
   if (!pending || query.get('state') !== pending.state) {
@@ -122,11 +184,28 @@ export async function handleRedirect() {
     redirect_uri: redirectURI(),
     code_verifier: pending.verifier,
   });
-  saveTokens(response, null);
+  saveTokens(response, null, { remember: pending.remember, signedInAt: pending.signedInAt ?? undefined });
   return true;
 }
 
 let refreshing = null;
+
+/**
+ * A kept sign-in outlives Microsoft's 24-hour refresh token: renew it with a
+ * sign-in redirect for the same account. While Microsoft still knows this
+ * browser it comes straight back without showing anything; otherwise it asks
+ * the person to sign in. (Not `prompt=none`: when Microsoft has no session,
+ * that can strand the tab on a Microsoft error page.) At most once every few
+ * minutes, so it can't loop.
+ */
+function renewSilently(tokens) {
+  if (!tokens.remember || !tokens.account) return false;
+  const lastAttempt = Number(sessionStorage.getItem(SILENT_ATTEMPT)) || 0;
+  if (Date.now() - lastAttempt < 5 * 60 * 1000) return false;
+  sessionStorage.setItem(SILENT_ATTEMPT, String(Date.now()));
+  signIn({ remember: true, loginHint: tokens.account, signedInAt: tokens.signedInAt });
+  return true;
+}
 
 /** A valid Graph access token, or null when the user must sign in again. */
 export async function accessToken({ forceRefresh = false } = {}) {
@@ -142,6 +221,7 @@ export async function accessToken({ forceRefresh = false } = {}) {
     .catch((error) => {
       // Refresh tokens for single-page apps last 24 hours; sign in again after that.
       if (error.code === 'invalid_grant' || error.code === 'interaction_required') {
+        if (renewSilently(tokens)) return new Promise(() => {}); // Leaving the page.
         signOut();
         return null;
       }

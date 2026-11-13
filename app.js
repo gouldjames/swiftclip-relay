@@ -11,6 +11,8 @@ const KEY_STORAGE = 'swiftclip.relayKey';
 const NOTIFY_STORAGE = 'swiftclip.notify';
 const NOTIFY_DURATION = 5000;
 const SEND_LIFETIME = 5 * 60 * 1000;
+/** Written by SwiftClip's "Sign Out Web Pages": pages signed in before it sign out. */
+const END_WEB_SESSIONS = /^end-web-sessions-(\d{1,16})\.json$/;
 const POLL_VISIBLE = 3000;
 const POLL_HIDDEN = 20000;
 const SWEEP_INTERVAL = 60000;
@@ -85,6 +87,12 @@ async function poll() {
   try {
     if (now < resumeAt) return;
     const files = await list(FOLDERS.toBrowser);
+    const endedAt = Math.max(0, ...files.map((file) => Number(END_WEB_SESSIONS.exec(file.name)?.[1] || 0)));
+    if (endedAt > auth.signedInAt()) {
+      endSession('You were signed out from SwiftClip.');
+      return;
+    }
+    auth.touch();
     const present = new Set();
     const arrived = [];
     for (const file of files) {
@@ -225,6 +233,15 @@ function renderItem(entry) {
   return li;
 }
 
+/** Signs out and forgets the key, e.g. when SwiftClip signs out web pages. */
+function endSession(message) {
+  auth.signOut();
+  forgetKey();
+  clearTimeout(pollTimer);
+  show('signed-out');
+  if (message) toast(message);
+}
+
 // MARK: - Notifications
 
 const notificationsSupported = () => 'Notification' in window && window.isSecureContext;
@@ -349,7 +366,7 @@ async function startRelay() {
 }
 
 function wireEvents() {
-  $('sign-in').addEventListener('click', () => auth.signIn());
+  $('sign-in').addEventListener('click', () => auth.signIn({ remember: $('stay-signed-in').checked }));
   $('sign-out').addEventListener('click', () => {
     auth.signOut();
     clearTimeout(pollTimer);
