@@ -282,9 +282,53 @@ function notifyArrival(arrived) {
   notification.onclick = () => {
     clearTimeout(timer);
     notification.close();
-    window.focus();
-    copy(message.text, message.password);
+    copyWhenFocused(message.text, message.password);
   };
+}
+
+/** Resolves true once this page has focus, or false after `timeout`. */
+function waitForFocus(timeout) {
+  if (document.hasFocus()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      window.removeEventListener('focus', finish);
+      resolve(document.hasFocus());
+    };
+    const timer = setTimeout(finish, timeout);
+    window.addEventListener('focus', finish);
+  });
+}
+
+let pendingCopy = null;
+
+/**
+ * Copies after a notification click. Browsers only let a focused page write to
+ * the clipboard, and the click arrives while the page is still in the
+ * background: ask for focus and wait for it. If the system won't bring the
+ * window forward (it may only flash it), copy as soon as the person clicks
+ * into the page, within a minute.
+ */
+async function copyWhenFocused(text, isPassword) {
+  window.focus();
+  if (await waitForFocus(1500)) {
+    copy(text, isPassword);
+    return;
+  }
+  if (pendingCopy) window.removeEventListener('focus', pendingCopy.listener);
+  const listener = () => {
+    window.removeEventListener('focus', listener);
+    clearTimeout(pendingCopy?.timer);
+    pendingCopy = null;
+    copy(text, isPassword);
+  };
+  const timer = setTimeout(() => {
+    window.removeEventListener('focus', listener);
+    pendingCopy = null;
+  }, 60000);
+  pendingCopy = { listener, timer };
+  window.addEventListener('focus', listener);
+  toast('Click this page to copy it.');
 }
 
 // MARK: - Actions
