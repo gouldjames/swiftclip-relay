@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https://login.microsoftonline.com https://graph.microsoft.com https://*.sharepoint.com https://*.1drv.com https://*.livefilestore.com; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src https://login.microsoftonline.com https://graph.microsoft.com https://*.sharepoint.com https://*.1drv.com https://*.livefilestore.com; base-uri 'none'; form-action 'none'">
   <meta name="color-scheme" content="light dark">
   <title>SwiftClip Relay</title>
-  <link rel="stylesheet" href="style.css?v=6449276">
+  <link rel="stylesheet" href="style.css?v=c01974a">
   <link rel="icon" href="logo.svg" type="image/svg+xml">
-  <script type="module" src="app.js?v=6449276"></script>
+  <script type="module" src="app.js?v=c01974a"></script>
 </head>
 <body>
   <header class="bar">
@@ -57,7 +57,7 @@
             <span id="status" class="dim small" role="status"></span>
           </span>
         </div>
-        <ul id="items" class="items" aria-live="polite"></ul>
+        <ul id="items" class="items" aria-live="polite" aria-relevant="additions"></ul>
         <p id="empty" class="empty dim">Nothing yet. On your Mac, right-click an item in SwiftClip and choose Send to OneDrive, or press ⌘O.</p>
       </section>
 

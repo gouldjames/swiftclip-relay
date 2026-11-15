@@ -19,7 +19,9 @@ export function safeFileName(name) {
   let cleaned = String(name ?? '').replace(/[\/\\:\u0000-\u001f\u007f-\u009f]/g, '_').trim().replace(/^\.+/, '');
   if ([...cleaned].length > 200) {
     const dot = cleaned.lastIndexOf('.');
-    const ext = dot > 0 ? cleaned.slice(dot + 1) : '';
+    // Keep a real extension. A very long one is just part of the name.
+    const found = dot > 0 ? cleaned.slice(dot + 1) : '';
+    const ext = [...found].length <= 20 ? found : '';
     const stem = [...(ext ? cleaned.slice(0, dot) : cleaned)].slice(0, ext ? 199 - [...ext].length : 200).join('');
     cleaned = ext ? `${stem}.${ext}` : stem;
   }
@@ -141,8 +143,14 @@ export function makeFileName(expiresAt, id = globalThis.crypto.randomUUID()) {
   return `${Math.floor(expiresAt)}-${id.toUpperCase()}.${FILE_EXTENSION}`;
 }
 
-function associatedData(fileName) {
-  return new TextEncoder().encode(`SwiftClip Relay v1\n${fileName}`);
+// Version 2 authenticates the folder a file travels in (ToBrowser or
+// FromBrowser), so a file copied into the other folder fails to open. Version 1
+// files are refused, as in SwiftClip.
+const VERSION = 2;
+
+function associatedData(fileName, folder) {
+  if (folder !== FOLDERS.toBrowser && folder !== FOLDERS.fromBrowser) throw new Error('Unknown relay folder');
+  return new TextEncoder().encode(`SwiftClip Relay v2\n${folder}\n${fileName}`);
 }
 
 /**
@@ -151,7 +159,7 @@ function associatedData(fileName) {
  * { name, type, bytes }. Returns a JSON string. Keys are in the order
  * SwiftClip writes them (sorted).
  */
-export async function seal(message, keys, fileName, nonce = globalThis.crypto.getRandomValues(new Uint8Array(12))) {
+export async function seal(message, keys, fileName, folder, nonce = globalThis.crypto.getRandomValues(new Uint8Array(12))) {
   const file = message.file ? {
     data: bytesToBase64(message.file.bytes),
     name: safeFileName(message.file.name),
@@ -172,11 +180,11 @@ export async function seal(message, keys, fileName, nonce = globalThis.crypto.ge
     text: String(message.text ?? ''),
   }));
   const sealed = new Uint8Array(await subtle.encrypt(
-    { name: 'AES-GCM', iv: nonce, additionalData: associatedData(fileName), tagLength: 128 },
+    { name: 'AES-GCM', iv: nonce, additionalData: associatedData(fileName, folder), tagLength: 128 },
     keys.aesKey,
     plaintext,
   ));
-  return JSON.stringify({ c: base64url(sealed), k: keys.keyIDText, n: base64url(nonce), v: 1 });
+  return JSON.stringify({ c: base64url(sealed), k: keys.keyIDText, n: base64url(nonce), v: VERSION });
 }
 
 export class RelayError extends Error {
@@ -190,21 +198,22 @@ export class RelayError extends Error {
 export function keyIDOf(json) {
   try {
     const wire = JSON.parse(json);
-    return wire && wire.v === 1 && typeof wire.k === 'string' ? wire.k : null;
+    return wire && wire.v === VERSION && typeof wire.k === 'string' ? wire.k : null;
   } catch {
     return null;
   }
 }
 
 /** Decrypts a relay file. Throws RelayError. */
-export async function open(json, keys, fileName) {
+/** Decrypts a file read from `folder`. Fails if it was sealed for the other folder. */
+export async function open(json, keys, fileName, folder) {
   let wire;
   try {
     wire = JSON.parse(json);
   } catch {
     throw new RelayError('malformed');
   }
-  if (!wire || wire.v !== 1 || typeof wire.k !== 'string') throw new RelayError('malformed');
+  if (!wire || wire.v !== VERSION || typeof wire.k !== 'string') throw new RelayError('malformed');
   if (wire.k !== keys.keyIDText) throw new RelayError('wrongKey');
   const nonce = fromBase64url(wire.n);
   const sealed = fromBase64url(wire.c);
@@ -212,7 +221,7 @@ export async function open(json, keys, fileName) {
   let plaintext;
   try {
     plaintext = await subtle.decrypt(
-      { name: 'AES-GCM', iv: nonce, additionalData: associatedData(fileName), tagLength: 128 },
+      { name: 'AES-GCM', iv: nonce, additionalData: associatedData(fileName, folder), tagLength: 128 },
       keys.aesKey,
       sealed,
     );

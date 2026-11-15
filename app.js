@@ -1,19 +1,18 @@
 // SwiftClip Relay: shows what SwiftClip sent to OneDrive and sends text back.
 // Everything is decrypted and encrypted here in the browser; OneDrive only
 // stores ciphertext. Message text is only ever inserted with textContent.
-import * as auth from './auth.js?v=6449276';
-import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=6449276';
+import * as auth from './auth.js?v=c01974a';
+import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=c01974a';
+import { FocusDeferral, afterSend, problemText, readItem, sessionEnded } from './page-logic.js?v=c01974a';
 import {
-  FOLDERS, IMAGE_TYPES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, RelayError, deriveKeys, keyIDOf,
-  makeFileName, open, parseFileName, parseKey, safeFileName, seal,
-} from './relay-crypto.js?v=6449276';
+  FOLDERS, IMAGE_TYPES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, deriveKeys,
+  makeFileName, parseFileName, parseKey, safeFileName, seal,
+} from './relay-crypto.js?v=c01974a';
 
 const KEY_STORAGE = 'swiftclip.relayKey';
 const NOTIFY_STORAGE = 'swiftclip.notify';
 const NOTIFY_DURATION = 5000;
 const SEND_LIFETIME = 5 * 60 * 1000;
-/** Written by SwiftClip's "Sign Out Web Pages": pages signed in before it sign out. */
-const END_WEB_SESSIONS = /^end-web-sessions-(\d{1,16})\.json$/;
 const POLL_VISIBLE = 3000;
 const POLL_HIDDEN = 20000;
 const SWEEP_INTERVAL = 60000;
@@ -22,7 +21,7 @@ const $ = (id) => document.getElementById(id);
 const views = ['setup', 'signed-out', 'key-entry', 'relay'];
 
 let keys = null;
-/** name → { file, expiresAt, message?, problem? } */
+/** name → { file, expiresAt, message?, problem?, view?, imageURL? } */
 const items = new Map();
 const revealed = new Set();
 let pollTimer = null;
@@ -57,13 +56,35 @@ function storedKey() {
   return localStorage.getItem(KEY_STORAGE) || sessionStorage.getItem(KEY_STORAGE);
 }
 
+/** Stops polling and drops what was shown, keeping the stored key. */
+function stopRelay() {
+  keys = null;
+  clearTimeout(pollTimer);
+  clearItems();
+  primed = false;
+}
+
 function forgetKey() {
   localStorage.removeItem(KEY_STORAGE);
   sessionStorage.removeItem(KEY_STORAGE);
-  keys = null;
-  items.clear();
-  primed = false;
+  stopRelay();
 }
+
+function deleteEntry(name) {
+  const entry = items.get(name);
+  if (!entry) return;
+  if (entry.imageURL) URL.revokeObjectURL(entry.imageURL);
+  items.delete(name);
+}
+
+function clearItems() {
+  for (const name of [...items.keys()]) deleteEntry(name);
+  revealed.clear();
+}
+
+/** Errors that stop a whole poll pass, rather than only the file being read. */
+const isFatalReadError = (error) => error instanceof SignInRequired
+  || (error instanceof GraphError && (error.status === 429 || error.status === 503));
 
 async function useKey(text, remember) {
   const bytes = await parseKey(text);
@@ -85,17 +106,21 @@ async function poll() {
   if (polling || !keys) return;
   polling = true;
   const now = Date.now();
+  // Change Key or Sign Out may replace or clear the key while this pass waits
+  // on OneDrive: then its results belong to the old key and are dropped.
+  const pollKeys = keys;
+  const current = () => keys === pollKeys;
   try {
     if (now < resumeAt) return;
     const files = await list(FOLDERS.toBrowser);
-    const endedAt = Math.max(0, ...files.map((file) => Number(END_WEB_SESSIONS.exec(file.name)?.[1] || 0)));
-    if (endedAt > auth.signedInAt()) {
+    if (!current()) return;
+    if (sessionEnded(files, auth.signedInAt())) {
       endSession('You were signed out from SwiftClip.');
       return;
     }
     auth.touch();
     const present = new Set();
-    const arrived = [];
+    const fresh = [];
     for (const file of files) {
       const name = parseFileName(file.name);
       if (!name) continue;
@@ -106,13 +131,18 @@ async function poll() {
       }
       present.add(file.name);
       if (!items.has(file.name)) {
-        const entry = await readItem(file, name.expiresAt);
-        items.set(file.name, entry);
-        if (entry.message) arrived.push(entry);
+        // A file that can't be read now is skipped, not allowed to stop the
+        // pass: it's tried again next poll.
+        const entry = await readItem(file, name.expiresAt, pollKeys, { download, isFatal: isFatalReadError });
+        if (!current()) return;
+        if (entry) fresh.push(entry);
       }
     }
-    for (const name of [...items.keys()]) if (!present.has(name)) items.delete(name);
-    if (primed) notifyArrival(arrived);
+    // Added only once the pass has read everything, so an error that stops it
+    // leaves these to be read, and notified, next time.
+    for (const entry of fresh) items.set(entry.file.name, entry);
+    for (const name of [...items.keys()]) if (!present.has(name)) deleteEntry(name);
+    if (primed) notifyArrival(fresh.filter((entry) => entry.message));
     primed = true;
     if (now - lastSweep > SWEEP_INTERVAL) {
       lastSweep = now;
@@ -120,35 +150,23 @@ async function poll() {
         const name = parseFileName(file.name);
         if (name && name.expiresAt <= now) remove(file.id).catch(() => {});
       }
+      if (!current()) return;
     }
     lastPoll = Date.now();
     statusError = null;
     render();
   } catch (error) {
-    handleError(error);
+    if (current()) handleError(error);
   } finally {
     polling = false;
     if (keys) schedulePoll(document.visibilityState === 'visible' ? POLL_VISIBLE : POLL_HIDDEN);
   }
 }
 
-async function readItem(file, expiresAt) {
-  const text = await download(file);
-  const entry = { file, expiresAt };
-  if (keyIDOf(text) !== keys.keyIDText) {
-    entry.problem = 'wrongKey';
-    return entry;
-  }
-  try {
-    entry.message = await open(text, keys, file.name);
-  } catch (error) {
-    entry.problem = error instanceof RelayError ? error.code : 'malformed';
-  }
-  return entry;
-}
-
 function handleError(error) {
   if (error instanceof SignInRequired) {
+    // Polling stops until the next sign-in; the key stays stored.
+    stopRelay();
     show('signed-out');
     return;
   }
@@ -179,11 +197,26 @@ function button(label, onClick, primary = false) {
   return element;
 }
 
+/**
+ * Brings the list up to date. Each item's elements are built once, and again
+ * only when how it shows changes (Show/Hide); otherwise only its countdown is
+ * updated, so selection, focus and screen readers aren't disturbed every second.
+ */
 function render() {
   const list = $('items');
   const now = Date.now();
   const visible = [...items.values()].filter((entry) => entry.expiresAt > now).sort((a, b) => b.expiresAt - a.expiresAt);
-  list.replaceChildren(...visible.map(renderItem));
+  for (const entry of visible) {
+    const viewKey = revealed.has(entry.file.name) ? 'revealed' : 'hidden';
+    if (!entry.view || entry.view.key !== viewKey) entry.view = { key: viewKey, ...renderItem(entry) };
+    const countdown = timeLeft(entry.expiresAt);
+    if (entry.view.countdown.textContent !== countdown) entry.view.countdown.textContent = countdown;
+  }
+  const wanted = visible.map((entry) => entry.view.element);
+  const shown = [...list.children];
+  if (wanted.length !== shown.length || wanted.some((element, index) => element !== shown[index])) {
+    list.replaceChildren(...wanted);
+  }
   $('empty').hidden = visible.length > 0;
   if (statusError) {
     $('status').textContent = statusError;
@@ -193,6 +226,7 @@ function render() {
   }
 }
 
+/** Builds an item's elements: { element, countdown }. */
 function renderItem(entry) {
   const li = document.createElement('li');
   li.className = 'item';
@@ -215,7 +249,7 @@ function renderItem(entry) {
     name.textContent = message.file.name;
     row.append(icon, name);
     text.append(row);
-    meta.textContent = [formatSize(message.file.bytes.length), message.from ? `from ${message.from}` : null, timeLeft(entry.expiresAt)]
+    meta.textContent = [formatSize(message.file.bytes.length), message.from ? `from ${message.from}` : null]
       .filter(Boolean).join(' · ');
     actions.append(
       button('Download', () => downloadFile(message.file), true),
@@ -241,7 +275,7 @@ function renderItem(entry) {
         render();
       }));
     }
-    meta.textContent = [`Image ${message.image.width} × ${message.image.height}`, message.from ? `from ${message.from}` : null, timeLeft(entry.expiresAt)]
+    meta.textContent = [`Image ${message.image.width} × ${message.image.height}`, message.from ? `from ${message.from}` : null]
       .filter(Boolean).join(' · ');
     actions.append(
       button('Copy', () => copyMessage(message), true),
@@ -260,7 +294,7 @@ function renderItem(entry) {
     } else {
       text.textContent = message.text;
     }
-    meta.textContent = [message.password ? 'Password' : null, message.from ? `from ${message.from}` : null, timeLeft(entry.expiresAt)]
+    meta.textContent = [message.password ? 'Password' : null, message.from ? `from ${message.from}` : null]
       .filter(Boolean).join(' · ');
     actions.append(
       button('Copy', () => copy(message.text, message.password), true),
@@ -268,21 +302,21 @@ function renderItem(entry) {
     );
   } else {
     li.classList.add('unreadable');
-    text.textContent = entry.problem === 'wrongKey'
-      ? 'Encrypted with a different key. Choose Change Key and enter the key shown in SwiftClip.'
-      : 'This item couldn’t be read.';
-    meta.textContent = timeLeft(entry.expiresAt);
+    text.textContent = problemText(entry.problem);
     actions.append(button('Delete', () => deleteItem(entry)));
   }
+  // The countdown changes every second; the rest of the line doesn't.
+  const countdown = document.createElement('span');
+  if (meta.textContent) meta.append(' · ');
+  meta.append(countdown);
   li.append(text, actions, meta);
-  return li;
+  return { element: li, countdown };
 }
 
 /** Signs out and forgets the key, e.g. when SwiftClip signs out web pages. */
 function endSession(message) {
   auth.signOut();
   forgetKey();
-  clearTimeout(pollTimer);
   show('signed-out');
   if (message) toast(message);
 }
@@ -350,7 +384,7 @@ function waitForFocus(timeout) {
   });
 }
 
-let pendingCopy = null;
+const pendingCopy = new FocusDeferral(window, 60000);
 
 /**
  * Copies after a notification click. Browsers only let a focused page write to
@@ -361,23 +395,13 @@ let pendingCopy = null;
  */
 async function copyWhenFocused(copyIt) {
   window.focus();
+  // A later click replaces any copy still waiting from an earlier one.
+  pendingCopy.cancel();
   if (await waitForFocus(1500)) {
     copyIt();
     return;
   }
-  if (pendingCopy) window.removeEventListener('focus', pendingCopy.listener);
-  const listener = () => {
-    window.removeEventListener('focus', listener);
-    clearTimeout(pendingCopy?.timer);
-    pendingCopy = null;
-    copyIt();
-  };
-  const timer = setTimeout(() => {
-    window.removeEventListener('focus', listener);
-    pendingCopy = null;
-  }, 60000);
-  pendingCopy = { listener, timer };
-  window.addEventListener('focus', listener);
+  pendingCopy.schedule(copyIt);
   toast('Click this page to copy it.');
 }
 
@@ -429,9 +453,9 @@ function copyMessage(message) {
   if (message.image) copyImage(message.image); else copy(message.text, message.password);
 }
 
-/** A data: URL for an item's image (the page's security policy allows data: images). */
+/** A blob: URL for an item's image, made once and revoked when the item goes. */
 function imageURL(entry) {
-  entry.imageURL ??= `data:${entry.message.image.type};base64,${bytesToBase64(entry.message.image.bytes)}`;
+  entry.imageURL ??= URL.createObjectURL(new Blob([entry.message.image.bytes], { type: entry.message.image.type }));
   return entry.imageURL;
 }
 
@@ -501,34 +525,51 @@ async function prepareImage(blob) {
 
 let pendingImage = null;
 let pendingFile = null;
+/** Bumped by every attach and Remove, so a slow one that finishes late is dropped. */
+let attachGeneration = 0;
 
 /** Attaches a chosen, pasted or dropped file: images as images, anything else as a file. */
 function attach(file) {
   if (file.type.startsWith('image/')) attachImage(file); else attachFile(file);
 }
 
+/** Resolves true if the image is now attached. */
 async function attachImage(blob) {
+  const generation = ++attachGeneration;
+  let prepared;
   try {
-    pendingImage = await prepareImage(blob);
+    prepared = await prepareImage(blob);
   } catch (error) {
-    pendingImage = null;
-    toast(error.message || 'That image can’t be sent.');
-    return;
+    if (generation === attachGeneration) toast(error.message || 'That image can’t be sent.');
+    return false;
   }
+  // Something else was attached, or Remove clicked, while it was prepared.
+  if (generation !== attachGeneration) return false;
+  pendingImage = prepared;
   pendingFile = null;
   $('send-image-preview').src = `data:${pendingImage.type};base64,${bytesToBase64(pendingImage.bytes)}`;
   $('send-image-preview').hidden = false;
   $('send-file-icon').hidden = true;
   $('send-image-info').textContent = `Image ${pendingImage.width} × ${pendingImage.height} · ${formatSize(pendingImage.bytes.length)}`;
   $('send-image').hidden = false;
+  return true;
 }
 
 async function attachFile(file) {
+  const generation = ++attachGeneration;
   if (file.size > MAX_ATTACHMENT_BYTES) {
     toast('Files up to 5 MB can be sent.');
     return;
   }
-  pendingFile = { name: safeFileName(file.name), type: file.type || 'application/octet-stream', bytes: new Uint8Array(await file.arrayBuffer()) };
+  let bytes;
+  try {
+    bytes = new Uint8Array(await file.arrayBuffer());
+  } catch {
+    if (generation === attachGeneration) toast('That file couldn’t be read.');
+    return;
+  }
+  if (generation !== attachGeneration) return;
+  pendingFile = { name: safeFileName(file.name), type: file.type || 'application/octet-stream', bytes };
   pendingImage = null;
   $('send-image-preview').removeAttribute('src');
   $('send-image-preview').hidden = true;
@@ -538,6 +579,7 @@ async function attachFile(file) {
 }
 
 function clearImage() {
+  attachGeneration += 1;
   pendingImage = null;
   pendingFile = null;
   $('send-image').hidden = true;
@@ -548,21 +590,32 @@ function clearImage() {
 async function deleteItem(entry) {
   try {
     await remove(entry.file.id);
-    items.delete(entry.file.name);
+    deleteEntry(entry.file.name);
     render();
   } catch (error) {
     handleError(error);
   }
 }
 
+/** Set while a send is uploading: one at a time, so nothing goes twice. */
+let sending = false;
+
+/** What's in the send box now. */
+function composer() {
+  return { text: $('send-text').value, image: pendingImage, file: pendingFile, password: $('send-password').checked };
+}
+
 async function send(text, password, image = pendingImage, file = pendingFile) {
+  if (sending) return;
   if (!image && !file && !text.trim()) return;
   if (!image && !file && new TextEncoder().encode(text).length > MAX_TEXT_BYTES) {
     toast('That’s too long to send.');
     return;
   }
-  const sendButton = $('send-button');
-  sendButton.disabled = true;
+  sending = true;
+  const before = composer();
+  const sendButtons = [$('send-button'), $('paste-send')];
+  for (const control of sendButtons) control.disabled = true;
   try {
     const name = makeFileName(Date.now() + SEND_LIFETIME);
     const message = file
@@ -570,20 +623,49 @@ async function send(text, password, image = pendingImage, file = pendingFile) {
       : image
         ? { text: '', password, from: 'Web', sentAt: Date.now(), image }
         : { text, password, from: 'Web', sentAt: Date.now() };
-    const sealed = await seal(message, keys, name);
+    const sealed = await seal(message, keys, name, FOLDERS.fromBrowser);
     await upload(FOLDERS.fromBrowser, name, sealed);
-    if (image || file) clearImage(); else $('send-text').value = '';
-    $('send-password').checked = false;
+    // Keep anything typed or attached while it uploaded.
+    const clear = afterSend({ text, image, file, password }, before, composer());
+    if (clear.clearsAttachment) clearImage();
+    if (clear.clearsText) $('send-text').value = '';
+    if (clear.clearsPassword) $('send-password').checked = false;
     toast(file ? `${file.name} sent to SwiftClip` : image ? 'Image sent to SwiftClip' : 'Sent to SwiftClip');
   } catch (error) {
     handleError(error);
     toast(error instanceof SignInRequired ? 'Sign in again to send.' : 'Couldn’t send. Try again.');
   } finally {
-    sendButton.disabled = false;
+    sending = false;
+    for (const control of sendButtons) control.disabled = false;
   }
 }
 
 // MARK: - Start
+
+/**
+ * Without a key the page doesn't poll, so a "Sign Out Web Pages" sent from
+ * SwiftClip is looked for here too: a sign-in kept for 10 days without a kept
+ * key must still end. Returns true when the page signed out. A check that can't
+ * reach OneDrive is skipped; it's tried again when the page is next shown.
+ */
+let checkingSession = false;
+async function checkSessionEnded() {
+  if (checkingSession || !auth.isSignedIn()) return false;
+  checkingSession = true;
+  try {
+    const files = await list(FOLDERS.toBrowser);
+    if (!sessionEnded(files, auth.signedInAt())) return false;
+    endSession('You were signed out from SwiftClip.');
+    return true;
+  } catch (error) {
+    if (!(error instanceof SignInRequired)) return false;
+    stopRelay();
+    show('signed-out');
+    return true;
+  } finally {
+    checkingSession = false;
+  }
+}
 
 async function startRelay() {
   const saved = storedKey();
@@ -594,12 +676,15 @@ async function startRelay() {
   if (!keys) {
     show('key-entry');
     $('key-input').focus();
+    checkSessionEnded();
     return;
   }
   show('relay');
   $('notify-option').hidden = !notificationsSupported();
   $('notify').checked = notificationsOn();
   primed = false;
+  // Left from before a key change or sign-out: the next poll says how things are.
+  statusError = null;
   render();
   poll();
 }
@@ -608,9 +693,8 @@ function wireEvents() {
   $('sign-in').addEventListener('click', () => auth.signIn({ remember: $('stay-signed-in').checked }));
   $('sign-out').addEventListener('click', () => {
     auth.signOut();
-    clearTimeout(pollTimer);
-    items.clear();
-    primed = false;
+    // Stops polling; the key stays stored for the next sign-in.
+    stopRelay();
     show('signed-out');
   });
   $('notify').addEventListener('change', (event) => setNotifications(event.target.checked));
@@ -637,7 +721,6 @@ function wireEvents() {
   $('send-image-remove').addEventListener('click', clearImage);
   $('change-key').addEventListener('click', () => {
     forgetKey();
-    clearTimeout(pollTimer);
     $('key-input').value = '';
     show('key-entry');
     $('key-input').focus();
@@ -664,13 +747,13 @@ function wireEvents() {
     }
   });
   $('paste-send').addEventListener('click', async () => {
+    if (sending) return;
     try {
       if (navigator.clipboard.read) {
         for (const item of await navigator.clipboard.read()) {
           const type = item.types.find((t) => t.startsWith('image/'));
           if (type) {
-            await attachImage(await item.getType(type));
-            if (pendingImage) send('', $('send-password').checked);
+            if (await attachImage(await item.getType(type))) send('', $('send-password').checked);
             return;
           }
         }
@@ -686,7 +769,8 @@ function wireEvents() {
     }
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && keys) poll();
+    if (document.visibilityState !== 'visible') return;
+    if (keys) poll(); else if (!$('key-entry').hidden) checkSessionEnded();
   });
   // Countdowns.
   setInterval(() => { if (!$('relay').hidden) render(); }, 1000);
