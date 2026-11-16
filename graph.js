@@ -1,6 +1,7 @@
 // The Microsoft Graph calls the relay page needs.
-import { accessToken } from './auth.js?v=c01974a';
-import { MAX_FILE_BYTES, ROOT } from './relay-crypto.js?v=c01974a';
+import { accessToken } from './auth.js?v=ef6b079';
+import { readTextWithin, retryAfterSeconds } from './page-logic.js?v=ef6b079';
+import { MAX_FILE_BYTES, ROOT } from './relay-crypto.js?v=ef6b079';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0/me/drive/';
 
@@ -25,7 +26,7 @@ async function send(method, url, { body, contentType, accept = [200, 201, 204] }
     const response = await fetch(url, { method, headers, body, cache: 'no-store' });
     if (response.status === 401 && attempt === 0) continue;
     if (response.status === 429 || response.status === 503) {
-      throw new GraphError(response.status, 'OneDrive is busy. Trying again shortly.', Number(response.headers.get('Retry-After')) || 30);
+      throw new GraphError(response.status, 'OneDrive is busy. Trying again shortly.', retryAfterSeconds(response.headers.get('Retry-After')));
     }
     if (!accept.includes(response.status)) {
       const json = await response.json().catch(() => ({}));
@@ -78,7 +79,9 @@ export async function download(file) {
     ? await fetch(file.downloadURL, { cache: 'no-store' })
     : await send('GET', `${GRAPH}items/${encodeURIComponent(file.id)}/content`);
   if (!response.ok) throw new GraphError(response.status);
-  return response.text();
+  const text = await readTextWithin(response, MAX_FILE_BYTES);
+  if (text === null) throw new GraphError(413, 'File too large');
+  return text;
 }
 
 export async function upload(folder, name, text) {

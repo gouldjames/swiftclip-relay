@@ -119,3 +119,14 @@ textarea { resize: vertical; min-height: 90px; }
   max-width: calc(100% - 32px); text-align: center;
 }
 #relay { display: grid; gap: 18px; }
+
+.notice {
+  margin: -12px -4px 28px; padding: 14px 16px; border-radius: 11px; background: var(--field);
+  display: grid; justify-items: center; gap: 10px;
+}
+.centered .notice p { margin: 0; color: var(--text); }
+
+.dialog { max-width: min(440px, calc(100% - 32px)); color: var(--text); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25); }
+.dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
+.dialog p { margin: 0 0 18px; line-height: 1.45; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }

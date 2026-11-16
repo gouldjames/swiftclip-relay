@@ -1,18 +1,25 @@
 // Microsoft sign-in for the relay page: OAuth authorization code flow with
 // PKCE, no client secret and no third-party library. Register this page's
 // address as a "Single-page application" redirect URI in Microsoft Entra.
-import { config } from './config.js?v=c01974a';
+import { config } from './config.js?v=ef6b079';
 
 const SCOPES = 'openid profile offline_access https://graph.microsoft.com/Files.ReadWrite';
-// By default tokens live only as long as this tab, so nothing stays behind on a
-// shared or client-managed computer. "Keep me signed in" keeps them in this
-// browser for 10 days, a period that starts again each time the page is used.
+// By default the page's tokens live only as long as this tab. "Keep me signed
+// in" keeps them in this browser for 10 days, a period that starts again each
+// time the page is used. Microsoft's own sign-in in the browser is separate:
+// the page's Sign Out offers to end it too, through logoutURL().
 const REMEMBER_MS = 10 * 24 * 60 * 60 * 1000;
 const TOKENS = 'swiftclip.tokens';
 const PENDING = 'swiftclip.pendingSignIn';
 const SILENT_ATTEMPT = 'swiftclip.silentRenewal';
 // The sign-in in progress always lives in the tab.
 const store = sessionStorage;
+
+/**
+ * Bumped by every sign-out and sign-in, so a token request still on its way
+ * then can't write its tokens back, or start a renewal, for a session that ended.
+ */
+let session = 0;
 
 const authority = () => `https://login.microsoftonline.com/${encodeURIComponent(config.tenant || 'common')}/oauth2/v2.0`;
 export const redirectURI = () => location.origin + location.pathname;
@@ -59,11 +66,15 @@ function writeTokens(tokens) {
  */
 function saveTokens(response, previous, options = {}) {
   const remember = options.remember ?? previous?.remember ?? false;
+  const claims = response.id_token ? idTokenClaims(response.id_token) : null;
   const tokens = {
     accessToken: response.access_token,
     expiresAt: Date.now() + (Number(response.expires_in) || 3600) * 1000,
     refreshToken: response.refresh_token || previous?.refreshToken || null,
-    account: (response.id_token && accountName(response.id_token)) || previous?.account || null,
+    account: (claims && (claims.preferred_username || claims.name)) || previous?.account || null,
+    // Only in the ID token when the app registration adds the optional
+    // login_hint claim; Microsoft's logout then skips its account picker.
+    loginHint: claims?.login_hint || previous?.loginHint || null,
     remember,
     rememberUntil: remember ? (previous?.rememberUntil ?? Date.now() + REMEMBER_MS) : null,
     signedInAt: options.signedInAt ?? previous?.signedInAt ?? Date.now(),
@@ -72,11 +83,10 @@ function saveTokens(response, previous, options = {}) {
   return tokens;
 }
 
-function accountName(idToken) {
+function idTokenClaims(idToken) {
   try {
     const payload = idToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-    const claims = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(payload), (c) => c.charCodeAt(0))));
-    return claims.preferred_username || claims.name || null;
+    return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(payload), (c) => c.charCodeAt(0))));
   } catch {
     return null;
   }
@@ -93,6 +103,14 @@ export function isSignedIn() {
 /** When this browser signed in, in milliseconds; 0 when signed out. */
 export function signedInAt() {
   return readTokens()?.signedInAt || 0;
+}
+
+/**
+ * The ID token's login_hint claim, or null. Read it before signOut() to pass
+ * to logoutURL(), since signing out forgets it.
+ */
+export function logoutHint() {
+  return readTokens()?.loginHint || null;
 }
 
 /** Whether the sign-in is kept in this browser. */
@@ -136,7 +154,22 @@ export async function signIn({ prompt, remember = false, loginHint, signedInAt: 
   location.assign(`${authority()}/authorize?${parameters}`);
 }
 
+/**
+ * Microsoft's sign-out page for this page's authority. It ends the browser's
+ * Microsoft session, for Outlook, Teams and other Microsoft sites too, then
+ * comes back to this page (an address already registered for sign-in).
+ * `loginHint` is the login_hint claim; without it Microsoft asks which account.
+ */
+export function logoutURL(loginHint) {
+  const parameters = new URLSearchParams({ post_logout_redirect_uri: redirectURI() });
+  if (loginHint) parameters.set('logout_hint', loginHint);
+  return `${authority()}/logout?${parameters}`;
+}
+
+/** Signs this page out: its tokens and any sign-in in progress are forgotten. */
 export function signOut() {
+  session += 1;
+  refreshing = null;
   sessionStorage.removeItem(TOKENS);
   localStorage.removeItem(TOKENS);
   store.removeItem(PENDING);
@@ -159,6 +192,15 @@ async function requestToken(parameters) {
   return json;
 }
 
+/**
+ * Fixed wording, with Microsoft's error code only when it looks like one: the
+ * address can be a link anyone wrote, so its text is never shown.
+ */
+export function signInErrorText(code) {
+  const shown = /^[a-z_]{1,40}$/.test(code ?? '') ? ` (${code})` : '';
+  return `Sign-in didn’t complete${shown}. Try again.`;
+}
+
 /** Finishes sign-in when Microsoft redirects back. Returns true if it did. */
 export async function handleRedirect() {
   const query = new URLSearchParams(location.search);
@@ -166,24 +208,30 @@ export async function handleRedirect() {
   // Remove the code from the address bar and history straight away.
   history.replaceState(null, '', location.pathname);
   const pending = JSON.parse(store.getItem(PENDING) || 'null');
+  if (!pending || query.get('state') !== pending.state) {
+    // Not the answer to this tab's sign-in, e.g. a link someone made: an
+    // error is ignored, and a sign-in in progress is left to finish.
+    if (query.has('code')) throw new Error('Sign-in was interrupted. Please try again.');
+    return false;
+  }
   store.removeItem(PENDING);
   if (query.has('error')) {
-    if (pending?.renewal) {
+    if (pending.renewal) {
       // Renewing didn't work out (e.g. the person cancelled Microsoft's page).
       signOut();
       throw new Error('Your sign-in has ended. Sign in again to continue.');
     }
-    throw new Error(query.get('error_description') || query.get('error'));
+    throw new Error(signInErrorText(query.get('error')));
   }
-  if (!pending || query.get('state') !== pending.state) {
-    throw new Error('Sign-in was interrupted. Please try again.');
-  }
+  const started = session;
   const response = await requestToken({
     grant_type: 'authorization_code',
     code: query.get('code'),
     redirect_uri: redirectURI(),
     code_verifier: pending.verifier,
   });
+  if (session !== started) return false;
+  session += 1;
   saveTokens(response, null, { remember: pending.remember, signedInAt: pending.signedInAt ?? undefined });
   return true;
 }
@@ -216,9 +264,14 @@ export async function accessToken({ forceRefresh = false } = {}) {
     signOut();
     return null;
   }
-  refreshing ??= requestToken({ grant_type: 'refresh_token', refresh_token: tokens.refreshToken })
-    .then((response) => saveTokens(response, tokens).accessToken)
+  if (refreshing) return refreshing;
+  const started = session;
+  // Signed out meanwhile, here or in another tab: the answer is dropped.
+  const ended = () => session !== started || !readTokens();
+  const request = requestToken({ grant_type: 'refresh_token', refresh_token: tokens.refreshToken })
+    .then((response) => (ended() ? null : saveTokens(response, tokens).accessToken))
     .catch((error) => {
+      if (ended()) return null;
       // Refresh tokens for single-page apps last 24 hours; sign in again after that.
       if (error.code === 'invalid_grant' || error.code === 'interaction_required') {
         if (renewSilently(tokens)) return new Promise(() => {}); // Leaving the page.
@@ -228,7 +281,8 @@ export async function accessToken({ forceRefresh = false } = {}) {
       throw error;
     })
     .finally(() => {
-      refreshing = null;
+      if (refreshing === request) refreshing = null;
     });
-  return refreshing;
+  refreshing = request;
+  return request;
 }

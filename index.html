@@ -7,9 +7,9 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src https://login.microsoftonline.com https://graph.microsoft.com https://*.sharepoint.com https://*.1drv.com https://*.livefilestore.com; base-uri 'none'; form-action 'none'">
   <meta name="color-scheme" content="light dark">
   <title>SwiftClip Relay</title>
-  <link rel="stylesheet" href="style.css?v=c01974a">
+  <link rel="stylesheet" href="style.css?v=ef6b079">
   <link rel="icon" href="logo.svg" type="image/svg+xml">
-  <script type="module" src="app.js?v=c01974a"></script>
+  <script type="module" src="app.js?v=ef6b079"></script>
 </head>
 <body>
   <header class="bar">
@@ -31,10 +31,15 @@
     </section>
 
     <section id="signed-out" class="card centered" hidden>
+      <div id="remote-sign-out" class="notice" role="status" hidden>
+        <p>SwiftClip signed this page out and the relay key was removed from this browser. This browser is still signed in to Microsoft, which also signs it in to Outlook, Teams and other Microsoft sites.</p>
+        <button type="button" id="microsoft-sign-out">Sign out of Microsoft too</button>
+      </div>
       <h1>Your clipboard, from your Mac</h1>
       <p>Sign in with the Microsoft account you use in SwiftClip. Items are encrypted, and removed from OneDrive after a few minutes.</p>
       <p><label class="check"><input type="checkbox" id="stay-signed-in"> Keep me signed in for 10 days</label></p>
       <button class="primary" id="sign-in" type="button">Sign In with Microsoft</button>
+      <p id="forget-key-row" class="small" hidden><button class="link" id="forget-key" type="button">Forget the relay key kept in this browser</button></p>
     </section>
 
     <section id="key-entry" class="card centered" hidden>
@@ -85,6 +90,15 @@
     </div>
 
     <p id="message" class="toast" role="alert" hidden></p>
+
+    <dialog id="sign-out-dialog" class="card dialog" aria-labelledby="sign-out-title" aria-describedby="sign-out-detail">
+      <h2 id="sign-out-title">Sign out of Microsoft too?</h2>
+      <p id="sign-out-detail" class="dim">This page signs out and removes the relay key from this browser. Signing out of Microsoft as well also signs this browser out of Outlook, Teams and other Microsoft sites. On a computer others use, sign out of Microsoft too.</p>
+      <div class="dialog-actions">
+        <button type="button" id="sign-out-page" value="page" autofocus>Only this page</button>
+        <button type="button" class="primary" id="sign-out-microsoft" value="microsoft">Sign out of Microsoft too</button>
+      </div>
+    </dialog>
   </main>
 </body>
 </html>

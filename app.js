@@ -1,21 +1,25 @@
 // SwiftClip Relay: shows what SwiftClip sent to OneDrive and sends text back.
 // Everything is decrypted and encrypted here in the browser; OneDrive only
 // stores ciphertext. Message text is only ever inserted with textContent.
-import * as auth from './auth.js?v=c01974a';
-import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=c01974a';
-import { FocusDeferral, afterSend, problemText, readItem, sessionEnded } from './page-logic.js?v=c01974a';
+import * as auth from './auth.js?v=ef6b079';
+import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=ef6b079';
+import {
+  ClipboardExpiry, FocusDeferral, KEY_SAVED_AT, KEY_STORAGE, afterSend, forgetStoredKey, isFramed, markerAction,
+  mask, problemText, readItem,
+} from './page-logic.js?v=ef6b079';
 import {
   FOLDERS, IMAGE_TYPES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, deriveKeys,
   makeFileName, parseFileName, parseKey, safeFileName, seal,
-} from './relay-crypto.js?v=c01974a';
+} from './relay-crypto.js?v=ef6b079';
 
-const KEY_STORAGE = 'swiftclip.relayKey';
 const NOTIFY_STORAGE = 'swiftclip.notify';
 const NOTIFY_DURATION = 5000;
 const SEND_LIFETIME = 5 * 60 * 1000;
 const POLL_VISIBLE = 3000;
 const POLL_HIDDEN = 20000;
 const SWEEP_INTERVAL = 60000;
+/** How often the key entry view looks for a Sign Out Web Pages. */
+const KEY_ENTRY_CHECK = 10000;
 
 const $ = (id) => document.getElementById(id);
 const views = ['setup', 'signed-out', 'key-entry', 'relay'];
@@ -39,6 +43,8 @@ function show(view) {
   $('account').hidden = !signedIn;
   $('change-key').hidden = view !== 'relay';
   $('account-name').textContent = auth.account() || '';
+  $('forget-key-row').hidden = view !== 'signed-out' || !storedKey();
+  $('remote-sign-out').hidden = view !== 'signed-out' || !microsoftSignOutOffer;
 }
 
 let toastTimer = null;
@@ -56,17 +62,33 @@ function storedKey() {
   return localStorage.getItem(KEY_STORAGE) || sessionStorage.getItem(KEY_STORAGE);
 }
 
-/** Stops polling and drops what was shown, keeping the stored key. */
+/** When the stored key was stored, 0 if that isn't known, or null with no key. */
+function keySavedAt() {
+  const storage = [localStorage, sessionStorage].find((candidate) => candidate.getItem(KEY_STORAGE));
+  return storage ? Number(storage.getItem(KEY_SAVED_AT)) || 0 : null;
+}
+
+/**
+ * Stops polling and takes down everything shown or typed for this key, so
+ * nothing is left in the page, keeping the stored key.
+ */
 function stopRelay() {
   keys = null;
   clearTimeout(pollTimer);
   clearItems();
+  $('items').replaceChildren();
+  $('empty').hidden = false;
   primed = false;
+  pendingCopy.cancel();
+  arrivalNotification?.close();
+  arrivalNotification = null;
+  clearImage();
+  $('send-text').value = '';
+  $('send-password').checked = false;
 }
 
 function forgetKey() {
-  localStorage.removeItem(KEY_STORAGE);
-  sessionStorage.removeItem(KEY_STORAGE);
+  forgetStoredKey([localStorage, sessionStorage]);
   stopRelay();
 }
 
@@ -90,7 +112,9 @@ async function useKey(text, remember) {
   const bytes = await parseKey(text);
   if (!bytes) return false;
   forgetKey();
-  (remember ? localStorage : sessionStorage).setItem(KEY_STORAGE, text.trim().toUpperCase());
+  const storage = remember ? localStorage : sessionStorage;
+  storage.setItem(KEY_STORAGE, text.trim().toUpperCase());
+  storage.setItem(KEY_SAVED_AT, String(Date.now()));
   keys = await deriveKeys(bytes);
   return true;
 }
@@ -114,10 +138,7 @@ async function poll() {
     if (now < resumeAt) return;
     const files = await list(FOLDERS.toBrowser);
     if (!current()) return;
-    if (sessionEnded(files, auth.signedInAt())) {
-      endSession('You were signed out from SwiftClip.');
-      return;
-    }
+    if (applyMarkers(files)) return;
     auth.touch();
     const present = new Set();
     const fresh = [];
@@ -176,12 +197,6 @@ function handleError(error) {
 }
 
 // MARK: - Rendering
-
-function mask(text) {
-  const characters = [...text];
-  const revealedCount = Math.min(3, Math.max(0, characters.length - 5));
-  return characters.slice(0, revealedCount).join('') + '*******';
-}
 
 function timeLeft(expiresAt) {
   const seconds = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
@@ -286,7 +301,7 @@ function renderItem(entry) {
     const name = entry.file.name;
     if (message.password) {
       li.classList.add('password');
-      text.textContent = revealed.has(name) ? message.text : mask(message.text);
+      text.textContent = revealed.has(name) ? message.text : mask(message.text, message.reveal);
       actions.append(button(revealed.has(name) ? 'Hide' : 'Show', () => {
         if (revealed.has(name)) revealed.delete(name); else revealed.add(name);
         render();
@@ -313,15 +328,72 @@ function renderItem(entry) {
   return { element: li, countdown };
 }
 
-/** Signs out and forgets the key, e.g. when SwiftClip signs out web pages. */
-function endSession(message) {
+/**
+ * Set when SwiftClip signed this page out: the signed-out view then offers to
+ * end the browser's Microsoft session too, with the account's logout hint
+ * (read before signing out forgot it).
+ */
+let microsoftSignOutOffer = null;
+
+/**
+ * Signs this page out and always forgets the relay key, kept or not. With
+ * `microsoft`, then goes to Microsoft's sign-out page, which comes back here.
+ */
+function endSession({ microsoft = false, offerMicrosoft = false } = {}) {
+  // Signed out from SwiftClip while asking: the question no longer applies.
+  if ($('sign-out-dialog').open) $('sign-out-dialog').close();
+  const hint = auth.logoutHint();
   auth.signOut();
   forgetKey();
+  microsoftSignOutOffer = offerMicrosoft ? { hint } : null;
   show('signed-out');
-  if (message) toast(message);
+  if (microsoft) leaveForMicrosoftSignOut(hint);
+}
+
+/**
+ * Goes to Microsoft's sign-out page. Leaving ends the page's timer for a
+ * copied password, so a pending one is cleared from the clipboard first,
+ * while the click still lets the page write to it.
+ */
+async function leaveForMicrosoftSignOut(hint) {
+  if (passwordExpiry.isPending) {
+    await navigator.clipboard.writeText('').catch(() => {});
+    passwordExpiry.cancel();
+  }
+  location.assign(auth.logoutURL(hint));
+}
+
+/** Asks whether to sign out of Microsoft too; Escape leaves everything as it is. */
+function confirmSignOut() {
+  const dialog = $('sign-out-dialog');
+  if (dialog.open) return;
+  dialog.returnValue = '';
+  dialog.showModal();
+}
+
+/**
+ * Acts on a "Sign Out Web Pages" marker in a ToBrowser listing. Returns true
+ * when the page signed out or forgot its key.
+ */
+function applyMarkers(files) {
+  switch (markerAction(files, auth.signedInAt(), keySavedAt())) {
+    case 'signOut':
+      endSession({ offerMicrosoft: true });
+      return true;
+    case 'forgetKey':
+      forgetKey();
+      show('key-entry');
+      toast('SwiftClip signed out web pages after this key was stored. Enter the key again.');
+      return true;
+    default:
+      return false;
+  }
 }
 
 // MARK: - Notifications
+
+/** The arrival notification on screen, closed when the relay stops. */
+let arrivalNotification = null;
 
 const notificationsSupported = () => 'Notification' in window && window.isSecureContext;
 
@@ -355,12 +427,14 @@ function notifyArrival(arrived) {
     ? `${message.file.name} · ${formatSize(message.file.bytes.length)}`
     : message.image
       ? (message.password ? 'Hidden image' : `Image ${message.image.width} × ${message.image.height}`)
-      : (message.password ? mask(message.text) : message.text.slice(0, 140));
+      : (message.password ? mask(message.text, message.reveal) : message.text.slice(0, 140));
+  arrivalNotification?.close();
   const notification = new Notification(title, {
     body: `${preview}\n${message.file ? 'Click to download' : 'Click to copy'}`,
     tag: 'swiftclip-arrival',
     silent: true,
   });
+  arrivalNotification = notification;
   const timer = setTimeout(() => notification.close(), NOTIFY_DURATION);
   notification.onclick = () => {
     clearTimeout(timer);
@@ -407,6 +481,21 @@ async function copyWhenFocused(copyIt) {
 
 // MARK: - Actions
 
+/**
+ * A copied password doesn't stay on the clipboard of a computer the owner
+ * may not control. A password copied from SwiftClip on the Mac is cleared
+ * after 90 seconds too.
+ */
+const passwordExpiry = new ClipboardExpiry(window, () => {
+  if (!document.hasFocus()) return false;
+  return navigator.clipboard.writeText('').then(() => true, () => false);
+});
+
+/** After a copy: a password is cleared later; anything else replaced it. */
+function copied(isPassword) {
+  if (isPassword) passwordExpiry.schedule(); else passwordExpiry.cancel();
+}
+
 async function copy(text, isPassword) {
   try {
     await navigator.clipboard.writeText(text);
@@ -426,7 +515,8 @@ async function copy(text, isPassword) {
       return;
     }
   }
-  toast(isPassword ? 'Password copied' : 'Copied');
+  copied(isPassword);
+  toast(isPassword ? 'Password copied. It’s cleared from the clipboard in 90 seconds.' : 'Copied');
 }
 
 /** Saves a received file through the browser's downloads. */
@@ -450,7 +540,7 @@ function formatSize(bytes) {
 
 /** Copies a received message: its image, or its text. */
 function copyMessage(message) {
-  if (message.image) copyImage(message.image); else copy(message.text, message.password);
+  if (message.image) copyImage(message.image, message.password); else copy(message.text, message.password);
 }
 
 /** A blob: URL for an item's image, made once and revoked when the item goes. */
@@ -466,13 +556,14 @@ function bytesToBase64(bytes) {
 }
 
 /** Browsers only put PNG images on the clipboard, so JPEGs are converted first. */
-async function copyImage(image) {
+async function copyImage(image, isPassword) {
   try {
     const png = image.type === 'image/png'
       ? Promise.resolve(new Blob([image.bytes], { type: 'image/png' }))
       : encodeImage(new Blob([image.bytes], { type: image.type }), 'image/png');
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
-    toast('Image copied');
+    copied(isPassword);
+    toast(isPassword ? 'Image copied. It’s cleared from the clipboard in 90 seconds.' : 'Image copied');
   } catch {
     toast('Your browser blocked copying the image.');
   }
@@ -645,18 +736,18 @@ async function send(text, password, image = pendingImage, file = pendingFile) {
 /**
  * Without a key the page doesn't poll, so a "Sign Out Web Pages" sent from
  * SwiftClip is looked for here too: a sign-in kept for 10 days without a kept
- * key must still end. Returns true when the page signed out. A check that can't
- * reach OneDrive is skipped; it's tried again when the page is next shown.
+ * key must still end, and a stored key from before it must be forgotten.
+ * Returns true when the page signed out or forgot its key. A check that can't
+ * reach OneDrive is skipped; it's tried again a few seconds later.
  */
 let checkingSession = false;
+let lastSessionCheck = 0;
 async function checkSessionEnded() {
   if (checkingSession || !auth.isSignedIn()) return false;
   checkingSession = true;
+  lastSessionCheck = Date.now();
   try {
-    const files = await list(FOLDERS.toBrowser);
-    if (!sessionEnded(files, auth.signedInAt())) return false;
-    endSession('You were signed out from SwiftClip.');
-    return true;
+    return applyMarkers(await list(FOLDERS.toBrowser));
   } catch (error) {
     if (!(error instanceof SignInRequired)) return false;
     stopRelay();
@@ -668,9 +759,11 @@ async function checkSessionEnded() {
 }
 
 async function startRelay() {
-  const saved = storedKey();
-  if (saved && !keys) {
-    const bytes = await parseKey(saved);
+  if (storedKey() && !keys) {
+    // A stored key isn't used until it's known no Sign Out Web Pages has
+    // retired it. One that can't reach OneDrive leaves that to the first poll.
+    if (await checkSessionEnded()) return;
+    const bytes = await parseKey(storedKey() ?? '');
     if (bytes) keys = await deriveKeys(bytes); else forgetKey();
   }
   if (!keys) {
@@ -691,11 +784,23 @@ async function startRelay() {
 
 function wireEvents() {
   $('sign-in').addEventListener('click', () => auth.signIn({ remember: $('stay-signed-in').checked }));
-  $('sign-out').addEventListener('click', () => {
-    auth.signOut();
-    // Stops polling; the key stays stored for the next sign-in.
-    stopRelay();
+  $('sign-out').addEventListener('click', confirmSignOut);
+  for (const choice of ['sign-out-microsoft', 'sign-out-page']) {
+    $(choice).addEventListener('click', (event) => $('sign-out-dialog').close(event.currentTarget.value));
+  }
+  $('sign-out-dialog').addEventListener('close', () => {
+    const choice = $('sign-out-dialog').returnValue;
+    if (choice === 'microsoft' || choice === 'page') endSession({ microsoft: choice === 'microsoft' });
+  });
+  $('microsoft-sign-out').addEventListener('click', () => {
+    const hint = microsoftSignOutOffer?.hint ?? null;
+    microsoftSignOutOffer = null;
+    leaveForMicrosoftSignOut(hint);
+  });
+  $('forget-key').addEventListener('click', () => {
+    forgetKey();
     show('signed-out');
+    toast('The relay key was removed from this browser.');
   });
   $('notify').addEventListener('change', (event) => setNotifications(event.target.checked));
   $('send-text').addEventListener('paste', (event) => {
@@ -772,11 +877,21 @@ function wireEvents() {
     if (document.visibilityState !== 'visible') return;
     if (keys) poll(); else if (!$('key-entry').hidden) checkSessionEnded();
   });
-  // Countdowns.
-  setInterval(() => { if (!$('relay').hidden) render(); }, 1000);
+  // Countdowns, and a page waiting for its key still signs out when told to.
+  setInterval(() => {
+    if (!$('relay').hidden) render();
+    else if (!$('key-entry').hidden && Date.now() - lastSessionCheck > KEY_ENTRY_CHECK) checkSessionEnded();
+  }, 1000);
 }
 
 async function main() {
+  // Inside another site's frame the page could be clickjacked into copying or
+  // sending. A meta CSP can't forbid framing and GitHub Pages can't send the
+  // header, so the page refuses to run before it reads anything stored.
+  if (isFramed(window)) {
+    document.body.replaceChildren();
+    return;
+  }
   wireEvents();
   if (!auth.isConfigured()) {
     show('setup');
