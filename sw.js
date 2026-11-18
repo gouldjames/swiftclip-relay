@@ -8,7 +8,7 @@
 
 // Replaced with the commit by .github/workflows/pages.yml, so each release
 // installs afresh, caches its own files and removes the last release's.
-const VERSION = '6fae95f';
+const VERSION = '225b7f4';
 const CACHE_PREFIX = 'swiftclip-relay-';
 const CACHE = CACHE_PREFIX + VERSION;
 
