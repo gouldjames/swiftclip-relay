@@ -4,12 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src https://login.microsoftonline.com https://graph.microsoft.com https://*.sharepoint.com https://*.1drv.com https://*.livefilestore.com; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src https://login.microsoftonline.com https://graph.microsoft.com https://*.sharepoint.com https://*.1drv.com https://*.livefilestore.com; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'">
   <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#18181a" media="(prefers-color-scheme: dark)">
   <title>SwiftClip Relay</title>
-  <link rel="stylesheet" href="style.css?v=ef6b079">
+  <link rel="stylesheet" href="style.css?v=6fae95f">
   <link rel="icon" href="logo.svg" type="image/svg+xml">
-  <script type="module" src="app.js?v=ef6b079"></script>
+  <link rel="manifest" href="manifest.webmanifest">
+  <script type="module" src="app.js?v=6fae95f"></script>
 </head>
 <body>
   <header class="bar">
@@ -17,10 +20,13 @@
       <img class="logo" src="logo.svg" alt="" width="26" height="26">
       <span>SwiftClip <span class="dim">Relay</span></span>
     </div>
-    <div class="account" id="account" hidden>
-      <span id="account-name" class="dim"></span>
-      <button class="link" id="change-key" type="button">Change Key</button>
-      <button class="link" id="sign-out" type="button">Sign Out</button>
+    <div class="bar-actions">
+      <button class="link" id="install-app" type="button" title="Open the relay in its own window, from your taskbar, Dock or Start menu" hidden>Install App</button>
+      <div class="account" id="account" hidden>
+        <span id="account-name" class="dim"></span>
+        <button class="link" id="change-key" type="button">Change Key</button>
+        <button class="link" id="sign-out" type="button">Sign Out</button>
+      </div>
     </div>
   </header>
 

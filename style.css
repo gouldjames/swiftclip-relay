@@ -44,9 +44,12 @@ body { margin: 0; }
   backdrop-filter: saturate(180%) blur(20px);
   z-index: 1;
 }
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 17px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 17px; white-space: nowrap; }
 .logo { display: block; width: 26px; height: 26px; }
-.account { display: flex; align-items: center; gap: 14px; font-size: 13px; }
+.bar-actions, .account { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 14px; min-width: 0; }
+.bar-actions button { white-space: nowrap; }
+.account { font-size: 13px; }
+#account-name { overflow-wrap: anywhere; }
 
 main { max-width: 760px; margin: 0 auto; padding: 24px 16px 80px; display: grid; gap: 18px; }
 .card { background: var(--card); border-radius: var(--radius); padding: 20px 22px; border: 1px solid var(--line); }

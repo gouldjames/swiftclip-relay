@@ -1,16 +1,17 @@
 // SwiftClip Relay: shows what SwiftClip sent to OneDrive and sends text back.
 // Everything is decrypted and encrypted here in the browser; OneDrive only
 // stores ciphertext. Message text is only ever inserted with textContent.
-import * as auth from './auth.js?v=ef6b079';
-import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=ef6b079';
+import * as auth from './auth.js?v=6fae95f';
+import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=6fae95f';
+import { offerInstall, registerServiceWorker } from './install.js?v=6fae95f';
 import {
   ClipboardExpiry, FocusDeferral, KEY_SAVED_AT, KEY_STORAGE, afterSend, forgetStoredKey, isFramed, markerAction,
   mask, problemText, readItem,
-} from './page-logic.js?v=ef6b079';
+} from './page-logic.js?v=6fae95f';
 import {
   FOLDERS, IMAGE_TYPES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, deriveKeys,
   makeFileName, parseFileName, parseKey, safeFileName, seal,
-} from './relay-crypto.js?v=ef6b079';
+} from './relay-crypto.js?v=6fae95f';
 
 const NOTIFY_STORAGE = 'swiftclip.notify';
 const NOTIFY_DURATION = 5000;
@@ -892,6 +893,8 @@ async function main() {
     document.body.replaceChildren();
     return;
   }
+  registerServiceWorker();
+  offerInstall($('install-app'));
   wireEvents();
   if (!auth.isConfigured()) {
     show('setup');
