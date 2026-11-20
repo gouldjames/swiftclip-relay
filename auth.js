@@ -1,7 +1,7 @@
 // Microsoft sign-in for the relay page: OAuth authorization code flow with
 // PKCE, no client secret and no third-party library. Register this page's
 // address as a "Single-page application" redirect URI in Microsoft Entra.
-import { config } from './config.js?v=225b7f4';
+import { config } from './config.js?v=b5ea47f';
 
 const SCOPES = 'openid profile offline_access https://graph.microsoft.com/Files.ReadWrite';
 // By default the page's tokens live only as long as this tab. "Keep me signed

@@ -1,20 +1,20 @@
 // SwiftClip Relay: shows what SwiftClip sent to OneDrive and sends text back.
 // Everything is decrypted and encrypted here in the browser; OneDrive only
 // stores ciphertext. Message text is only ever inserted with textContent.
-import * as auth from './auth.js?v=225b7f4';
-import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=225b7f4';
-import { offerInstall, placeAppWindow, registerServiceWorker } from './install.js?v=225b7f4';
+import * as auth from './auth.js?v=b5ea47f';
+import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=b5ea47f';
+import { offerInstall, placeAppWindow, registerServiceWorker } from './install.js?v=b5ea47f';
 import {
   ClipboardExpiry, FocusDeferral, KEY_SAVED_AT, KEY_STORAGE, afterSend, forgetStoredKey, isFramed, markerAction,
   mask, problemText, readItem,
-} from './page-logic.js?v=225b7f4';
+} from './page-logic.js?v=b5ea47f';
 import {
   FOLDERS, IMAGE_TYPES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, deriveKeys,
   makeFileName, parseFileName, parseKey, safeFileName, seal,
-} from './relay-crypto.js?v=225b7f4';
+} from './relay-crypto.js?v=b5ea47f';
 
 const NOTIFY_STORAGE = 'swiftclip.notify';
-const NOTIFY_DURATION = 5000;
+const NOTIFY_DURATION = 10000;
 const SEND_LIFETIME = 5 * 60 * 1000;
 const POLL_VISIBLE = 3000;
 const POLL_HIDDEN = 20000;
@@ -417,7 +417,7 @@ async function setNotifications(on) {
   }
 }
 
-/** Shows the newest arrival for 5 seconds. Clicking it copies the item. */
+/** Shows the newest arrival for 10 seconds. Clicking it copies the item. */
 function notifyArrival(arrived) {
   if (!arrived.length || !notificationsOn()) return;
   const newest = arrived.reduce((a, b) => (b.message.sentAt || 0) > (a.message.sentAt || 0) ? b : a);

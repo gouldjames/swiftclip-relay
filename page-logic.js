@@ -1,6 +1,6 @@
 // Parts of the relay page's logic that don't touch the DOM or the network
 // directly, so they can be tested with node --test.
-import { FOLDERS, RelayError, open as openRelayFile, revealedCharacters } from './relay-crypto.js?v=225b7f4';
+import { FOLDERS, RelayError, open as openRelayFile, revealedCharacters } from './relay-crypto.js?v=b5ea47f';
 
 const MASK = '*******';
 /** This many characters of a password always stay hidden, as in SecretMasker. */
