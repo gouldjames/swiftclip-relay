@@ -1,7 +1,7 @@
 // The Microsoft Graph calls the relay page needs.
-import { accessToken } from './auth.js?v=b5ea47f';
-import { readTextWithin, retryAfterSeconds } from './page-logic.js?v=b5ea47f';
-import { MAX_FILE_BYTES, ROOT } from './relay-crypto.js?v=b5ea47f';
+import { accessToken } from './auth.js?v=02686a3';
+import { readTextWithin, retryAfterSeconds } from './page-logic.js?v=02686a3';
+import { MAX_FILE_BYTES, ROOT } from './relay-crypto.js?v=02686a3';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0/me/drive/';
 

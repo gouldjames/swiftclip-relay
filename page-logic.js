@@ -1,6 +1,6 @@
 // Parts of the relay page's logic that don't touch the DOM or the network
 // directly, so they can be tested with node --test.
-import { FOLDERS, RelayError, open as openRelayFile, revealedCharacters } from './relay-crypto.js?v=b5ea47f';
+import { FOLDERS, RelayError, open as openRelayFile, revealedCharacters } from './relay-crypto.js?v=02686a3';
 
 const MASK = '*******';
 /** This many characters of a password always stay hidden, as in SecretMasker. */
@@ -296,4 +296,62 @@ export function afterSend(sent, before, now) {
   const untouched = now.text === before.text && now.image === before.image && now.file === before.file
     && now.password === before.password;
   return { clearsAttachment, clearsText, clearsPassword: untouched && now.password === sent.password };
+}
+
+/** Whether a drag carries files from outside the page, rather than text or a link. */
+export function draggingFiles(dataTransfer) {
+  return Array.from(dataTransfer?.types ?? []).includes('Files');
+}
+
+/**
+ * What a drop holds: the first file that can be sent, how many there were,
+ * and how many folders, which can't be sent. Uses `items`, which can tell a
+ * folder from a file at drop time, and falls back to `files`.
+ */
+export function droppedFiles(dataTransfer) {
+  const items = Array.from(dataTransfer?.items ?? []).filter((item) => item.kind === 'file');
+  let files;
+  let folders = 0;
+  if (items.length) {
+    files = [];
+    for (const item of items) {
+      if (item.webkitGetAsEntry?.()?.isDirectory) {
+        folders += 1;
+        continue;
+      }
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  } else {
+    files = Array.from(dataTransfer?.files ?? []);
+  }
+  return { file: files[0] ?? null, count: files.length, folders };
+}
+
+/**
+ * Tracks whether a drag is over the page. dragenter and dragleave fire for
+ * every element crossed on the way, so only a count of them says when the
+ * drag has left the window.
+ */
+export class DragDepth {
+  constructor() {
+    this.depth = 0;
+  }
+
+  /** Returns true when the drag has just come over the page. */
+  enter() {
+    this.depth += 1;
+    return this.depth === 1;
+  }
+
+  /** Returns true when the drag has just left the page. */
+  leave() {
+    if (this.depth === 0) return false;
+    this.depth -= 1;
+    return this.depth === 0;
+  }
+
+  reset() {
+    this.depth = 0;
+  }
 }

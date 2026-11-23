@@ -1,17 +1,17 @@
 // SwiftClip Relay: shows what SwiftClip sent to OneDrive and sends text back.
 // Everything is decrypted and encrypted here in the browser; OneDrive only
 // stores ciphertext. Message text is only ever inserted with textContent.
-import * as auth from './auth.js?v=b5ea47f';
-import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=b5ea47f';
-import { offerInstall, placeAppWindow, registerServiceWorker } from './install.js?v=b5ea47f';
+import * as auth from './auth.js?v=02686a3';
+import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=02686a3';
+import { offerInstall, placeAppWindow, registerServiceWorker } from './install.js?v=02686a3';
 import {
-  ClipboardExpiry, FocusDeferral, KEY_SAVED_AT, KEY_STORAGE, afterSend, forgetStoredKey, isFramed, markerAction,
-  mask, problemText, readItem,
-} from './page-logic.js?v=b5ea47f';
+  ClipboardExpiry, DragDepth, FocusDeferral, KEY_SAVED_AT, KEY_STORAGE, afterSend, draggingFiles, droppedFiles,
+  forgetStoredKey, isFramed, markerAction, mask, problemText, readItem,
+} from './page-logic.js?v=02686a3';
 import {
   FOLDERS, IMAGE_TYPES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, deriveKeys,
   makeFileName, parseFileName, parseKey, safeFileName, seal,
-} from './relay-crypto.js?v=b5ea47f';
+} from './relay-crypto.js?v=02686a3';
 
 const NOTIFY_STORAGE = 'swiftclip.notify';
 const NOTIFY_DURATION = 10000;
@@ -534,7 +534,7 @@ function downloadFile(file) {
 }
 
 function formatSize(bytes) {
-  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1024) return bytes === 1 ? '1 byte' : `${bytes} bytes`;
   if (bytes < 1048576) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / 1048576).toFixed(1)} MB`;
 }
@@ -679,6 +679,49 @@ function clearImage() {
   $('send-image-file').value = '';
 }
 
+/**
+ * Files dropped anywhere on the page are attached, with an overlay while
+ * they're dragged over it. Everywhere else the browser would open the file in
+ * place of the page, so drops are always caught, and refused (no copy cursor)
+ * when nothing can be sent. Text and links dragged in are left alone.
+ */
+function wireFileDrops() {
+  const depth = new DragDepth();
+  const canAttach = () => !$('relay').hidden;
+  const showOverlay = (visible) => {
+    $('drop-overlay').hidden = !visible;
+  };
+  document.addEventListener('dragenter', (event) => {
+    if (!draggingFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    if (depth.enter()) showOverlay(canAttach());
+  });
+  document.addEventListener('dragover', (event) => {
+    if (!draggingFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = canAttach() ? 'copy' : 'none';
+  });
+  document.addEventListener('dragleave', (event) => {
+    if (!draggingFiles(event.dataTransfer)) return;
+    if (depth.leave()) showOverlay(false);
+  });
+  document.addEventListener('drop', (event) => {
+    if (!draggingFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    depth.reset();
+    showOverlay(false);
+    if (!canAttach()) return;
+    const { file, count, folders } = droppedFiles(event.dataTransfer);
+    if (!file) {
+      toast(folders ? 'Folders can’t be sent. Drop a file instead.' : 'That couldn’t be read.');
+      return;
+    }
+    // Before attaching, so a problem with the file itself (too large) is what stays shown.
+    if (count > 1 || folders) toast(`One file at a time: ${file.name} is attached.`);
+    attach(file);
+  });
+}
+
 async function deleteItem(entry) {
   try {
     await remove(entry.file.id);
@@ -810,15 +853,7 @@ function wireEvents() {
     event.preventDefault();
     attach(file);
   });
-  $('send-text').addEventListener('dragover', (event) => {
-    if (event.dataTransfer?.types?.includes('Files')) event.preventDefault();
-  });
-  $('send-text').addEventListener('drop', (event) => {
-    const file = event.dataTransfer?.files?.[0];
-    if (!file) return;
-    event.preventDefault();
-    attach(file);
-  });
+  wireFileDrops();
   $('choose-image').addEventListener('click', () => $('send-image-file').click());
   $('send-image-file').addEventListener('change', (event) => {
     const file = event.target.files?.[0];

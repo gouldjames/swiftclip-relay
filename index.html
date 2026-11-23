@@ -9,10 +9,10 @@
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#18181a" media="(prefers-color-scheme: dark)">
   <title>SwiftClip Relay</title>
-  <link rel="stylesheet" href="style.css?v=b5ea47f">
+  <link rel="stylesheet" href="style.css?v=02686a3">
   <link rel="icon" href="logo.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
-  <script type="module" src="app.js?v=b5ea47f"></script>
+  <script type="module" src="app.js?v=02686a3"></script>
 </head>
 <body>
   <header class="bar">
@@ -91,8 +91,15 @@
             <button class="primary" type="submit" id="send-button">Send</button>
           </div>
         </form>
-        <p class="dim small">Arrives in your SwiftClip history within a few seconds. Ctrl+Enter sends. Images over 4 MB are scaled down; other files can be up to 5 MB.</p>
+        <p class="dim small">Arrives in your SwiftClip history within a few seconds. Ctrl+Enter sends. Drop a file anywhere on this page to attach it. Images over 4 MB are scaled down; other files can be up to 5 MB.</p>
       </section>
+    </div>
+
+    <div id="drop-overlay" class="drop-overlay" hidden aria-hidden="true">
+      <div class="drop-target">
+        <strong>Drop to attach</strong>
+        <span>Then choose Send. Images, or other files up to 5 MB.</span>
+      </div>
     </div>
 
     <p id="message" class="toast" role="alert" hidden></p>

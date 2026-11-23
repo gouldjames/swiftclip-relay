@@ -133,3 +133,17 @@ textarea { resize: vertical; min-height: 90px; }
 .dialog::backdrop { background: rgba(0, 0, 0, 0.35); }
 .dialog p { margin: 0 0 18px; line-height: 1.45; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+
+/* Shown while files are dragged over the page. It never takes the pointer, so the drag keeps reaching the page beneath. */
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent); pointer-events: none;
+}
+.drop-overlay[hidden] { display: none; }
+.drop-target {
+  width: min(520px, 100%); padding: 44px 24px; display: grid; gap: 6px; text-align: center;
+  background: var(--card); border: 2px dashed var(--accent); border-radius: var(--radius);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.12);
+}
+.drop-target strong { font-size: 17px; }
+.drop-target span { color: var(--dim); font-size: 13px; }
