@@ -1,17 +1,17 @@
 // SwiftClip Relay: shows what SwiftClip sent to OneDrive and sends text back.
 // Everything is decrypted and encrypted here in the browser; OneDrive only
 // stores ciphertext. Message text is only ever inserted with textContent.
-import * as auth from './auth.js?v=02686a3';
-import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=02686a3';
-import { offerInstall, placeAppWindow, registerServiceWorker } from './install.js?v=02686a3';
+import * as auth from './auth.js?v=e6a8eb7';
+import { GraphError, SignInRequired, download, list, remove, upload } from './graph.js?v=e6a8eb7';
+import { offerInstall, placeAppWindow, registerServiceWorker } from './install.js?v=e6a8eb7';
 import {
   ClipboardExpiry, DragDepth, FocusDeferral, KEY_SAVED_AT, KEY_STORAGE, afterSend, draggingFiles, droppedFiles,
-  forgetStoredKey, isFramed, markerAction, mask, problemText, readItem,
-} from './page-logic.js?v=02686a3';
+  forgetStoredKey, isFramed, markerAction, mask, problemText, readItem, removeAll,
+} from './page-logic.js?v=e6a8eb7';
 import {
   FOLDERS, IMAGE_TYPES, MAX_ATTACHMENT_BYTES, MAX_IMAGE_BYTES, MAX_TEXT_BYTES, deriveKeys,
   makeFileName, parseFileName, parseKey, safeFileName, seal,
-} from './relay-crypto.js?v=02686a3';
+} from './relay-crypto.js?v=e6a8eb7';
 
 const NOTIFY_STORAGE = 'swiftclip.notify';
 const NOTIFY_DURATION = 10000;
@@ -29,6 +29,12 @@ let keys = null;
 /** name → { file, expiresAt, message?, problem?, view?, imageURL? } */
 const items = new Map();
 const revealed = new Set();
+/**
+ * Items this page deleted from OneDrive. A poll that listed or read one just
+ * before it went must not bring it back; a name is dropped once listings stop
+ * showing it.
+ */
+const removedNames = new Set();
 let pollTimer = null;
 let lastPoll = 0;
 let lastSweep = 0;
@@ -103,6 +109,7 @@ function deleteEntry(name) {
 function clearItems() {
   for (const name of [...items.keys()]) deleteEntry(name);
   revealed.clear();
+  removedNames.clear();
 }
 
 /** Errors that stop a whole poll pass, rather than only the file being read. */
@@ -141,6 +148,8 @@ async function poll() {
     if (!current()) return;
     if (applyMarkers(files)) return;
     auth.touch();
+    const listed = new Set(files.map((file) => file.name));
+    for (const name of removedNames) if (!listed.has(name)) removedNames.delete(name);
     const present = new Set();
     const fresh = [];
     for (const file of files) {
@@ -151,6 +160,7 @@ async function poll() {
         remove(file.id).catch(() => {});
         continue;
       }
+      if (removedNames.has(file.name)) continue;
       present.add(file.name);
       if (!items.has(file.name)) {
         // A file that can't be read now is skipped, not allowed to stop the
@@ -161,10 +171,12 @@ async function poll() {
       }
     }
     // Added only once the pass has read everything, so an error that stops it
-    // leaves these to be read, and notified, next time.
-    for (const entry of fresh) items.set(entry.file.name, entry);
+    // leaves these to be read, and notified, next time. Not one deleted here
+    // while the pass waited on OneDrive.
+    const arrived = fresh.filter((entry) => !removedNames.has(entry.file.name));
+    for (const entry of arrived) items.set(entry.file.name, entry);
     for (const name of [...items.keys()]) if (!present.has(name)) deleteEntry(name);
-    if (primed) notifyArrival(fresh.filter((entry) => entry.message));
+    if (primed) notifyArrival(arrived.filter((entry) => entry.message));
     primed = true;
     if (now - lastSweep > SWEEP_INTERVAL) {
       lastSweep = now;
@@ -234,6 +246,7 @@ function render() {
     list.replaceChildren(...wanted);
   }
   $('empty').hidden = visible.length > 0;
+  $('clear-all').hidden = visible.length === 0;
   if (statusError) {
     $('status').textContent = statusError;
   } else if (lastPoll) {
@@ -639,6 +652,7 @@ async function attachImage(blob) {
   if (generation !== attachGeneration) return false;
   pendingImage = prepared;
   pendingFile = null;
+  showPasswordOption();
   $('send-image-preview').src = `data:${pendingImage.type};base64,${bytesToBase64(pendingImage.bytes)}`;
   $('send-image-preview').hidden = false;
   $('send-file-icon').hidden = true;
@@ -663,6 +677,7 @@ async function attachFile(file) {
   if (generation !== attachGeneration) return;
   pendingFile = { name: safeFileName(file.name), type: file.type || 'application/octet-stream', bytes };
   pendingImage = null;
+  showPasswordOption();
   $('send-image-preview').removeAttribute('src');
   $('send-image-preview').hidden = true;
   $('send-file-icon').hidden = false;
@@ -670,10 +685,20 @@ async function attachFile(file) {
   $('send-image').hidden = false;
 }
 
+/**
+ * A file isn't a password, so Password is hidden while one is attached. Its
+ * tick is kept, not cleared: if the file is removed, text typed next is still
+ * sent masked.
+ */
+function showPasswordOption() {
+  $('password-option').hidden = Boolean(pendingFile);
+}
+
 function clearImage() {
   attachGeneration += 1;
   pendingImage = null;
   pendingFile = null;
+  showPasswordOption();
   $('send-image').hidden = true;
   $('send-image-preview').removeAttribute('src');
   $('send-image-file').value = '';
@@ -725,10 +750,46 @@ function wireFileDrops() {
 async function deleteItem(entry) {
   try {
     await remove(entry.file.id);
+    removedNames.add(entry.file.name);
     deleteEntry(entry.file.name);
     render();
   } catch (error) {
     handleError(error);
+  }
+}
+
+let clearing = false;
+
+/**
+ * Deletes every item shown from OneDrive. Only the relay copies go: SwiftClip's
+ * history on the Mac and iPhone isn't touched. Items that arrive meanwhile stay.
+ */
+async function clearAll() {
+  const files = [...items.values()].map((entry) => entry.file);
+  if (clearing || !files.length) return;
+  clearing = true;
+  $('clear-all').disabled = true;
+  const clearKeys = keys;
+  try {
+    const { removed, errors } = await removeAll(files, remove);
+    // Signed out, or the key changed, while it ran: the list is already gone.
+    if (keys !== clearKeys) return;
+    for (const name of removed) {
+      removedNames.add(name);
+      deleteEntry(name);
+    }
+    render();
+    const signIn = errors.find((error) => error instanceof SignInRequired);
+    if (signIn) {
+      handleError(signIn);
+    } else if (errors.length) {
+      toast(errors.length === 1 ? 'One item couldn’t be deleted. Try again.' : `${errors.length} items couldn’t be deleted. Try again.`);
+    } else {
+      toast('Cleared from the relay');
+    }
+  } finally {
+    clearing = false;
+    $('clear-all').disabled = false;
   }
 }
 
@@ -753,8 +814,9 @@ async function send(text, password, image = pendingImage, file = pendingFile) {
   for (const control of sendButtons) control.disabled = true;
   try {
     const name = makeFileName(Date.now() + SEND_LIFETIME);
+    // A file is never a password: the option is hidden while one is attached.
     const message = file
-      ? { text: '', password, from: 'Web', sentAt: Date.now(), file }
+      ? { text: '', password: false, from: 'Web', sentAt: Date.now(), file }
       : image
         ? { text: '', password, from: 'Web', sentAt: Date.now(), image }
         : { text, password, from: 'Web', sentAt: Date.now() };
@@ -860,6 +922,7 @@ function wireEvents() {
     if (file) attach(file);
   });
   $('send-image-remove').addEventListener('click', clearImage);
+  $('clear-all').addEventListener('click', clearAll);
   $('change-key').addEventListener('click', () => {
     forgetKey();
     $('key-input').value = '';

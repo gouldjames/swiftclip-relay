@@ -1,6 +1,6 @@
 // Parts of the relay page's logic that don't touch the DOM or the network
 // directly, so they can be tested with node --test.
-import { FOLDERS, RelayError, open as openRelayFile, revealedCharacters } from './relay-crypto.js?v=02686a3';
+import { FOLDERS, RelayError, open as openRelayFile, revealedCharacters } from './relay-crypto.js?v=e6a8eb7';
 
 const MASK = '*******';
 /** This many characters of a password always stay hidden, as in SecretMasker. */
@@ -131,6 +131,29 @@ export async function readItem(file, expiresAt, keys, { download, isFatal, open 
     entry.problem = error instanceof RelayError ? error.code : 'malformed';
   }
   return entry;
+}
+
+/**
+ * Deletes every listed item from OneDrive, a few at a time, for Clear All.
+ * Returns the names of those now gone and the errors of those that aren't.
+ * One that already vanished counts as gone: `remove` accepts a 404.
+ */
+export async function removeAll(files, remove, { concurrency = 4 } = {}) {
+  const removed = [];
+  const errors = [];
+  const queue = [...files];
+  const worker = async () => {
+    for (let file = queue.shift(); file; file = queue.shift()) {
+      try {
+        await remove(file.id);
+        removed.push(file.name);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
+  return { removed, errors };
 }
 
 /**

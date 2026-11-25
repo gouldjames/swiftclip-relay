@@ -9,10 +9,10 @@
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#18181a" media="(prefers-color-scheme: dark)">
   <title>SwiftClip Relay</title>
-  <link rel="stylesheet" href="style.css?v=02686a3">
+  <link rel="stylesheet" href="style.css?v=e6a8eb7">
   <link rel="icon" href="logo.svg" type="image/svg+xml">
   <link rel="manifest" href="manifest.webmanifest">
-  <script type="module" src="app.js?v=02686a3"></script>
+  <script type="module" src="app.js?v=e6a8eb7"></script>
 </head>
 <body>
   <header class="bar">
@@ -66,6 +66,7 @@
           <span class="title-extras">
             <label class="check" id="notify-option" hidden title="Shows each new item for 10 seconds. Click the notification to copy it; this brings the page forward, since browsers only let a page in front copy."><input type="checkbox" id="notify"> Notify me</label>
             <span id="status" class="dim small" role="status"></span>
+            <button class="link" id="clear-all" type="button" title="Deletes every item here from OneDrive. Your SwiftClip history keeps them." hidden>Clear All</button>
           </span>
         </div>
         <ul id="items" class="items" aria-live="polite" aria-relevant="additions"></ul>
@@ -84,7 +85,7 @@
           </div>
           <input type="file" id="send-image-file" hidden>
           <div class="send-row">
-            <label class="check"><input type="checkbox" id="send-password"> Password</label>
+            <label class="check" id="password-option"><input type="checkbox" id="send-password"> Password</label>
             <span class="spacer"></span>
             <button type="button" id="choose-image">Attach File…</button>
             <button type="button" id="paste-send">Paste and Send</button>
